@@ -25,8 +25,11 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/amwolff/awsig"
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/tags"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"storj.io/minio/cmd/crypto"
 	"storj.io/minio/cmd/logger"
@@ -99,7 +102,9 @@ const (
 	ErrInvalidObjectState
 	ErrMalformedXML
 	ErrMissingContentLength
+	ErrContentLengthWithTransferEncoding
 	ErrMissingContentMD5
+	ErrInvalidContentSHA256
 	ErrMissingRequestBodyError
 	ErrMissingSecurityHeader
 	ErrNoSuchBucket
@@ -155,6 +160,7 @@ const (
 	ErrMissingSignHeadersTag
 	ErrMalformedDate
 	ErrMalformedPresignedDate
+	ErrMalformedPOSTDate
 	ErrMalformedCredentialDate
 	ErrMalformedCredentialRegion
 	ErrMalformedExpires
@@ -162,6 +168,7 @@ const (
 	ErrAuthHeaderEmpty
 	ErrExpiredPresignRequest
 	ErrRequestNotReadyYet
+	ErrRequestNotReadyYetOrExpired
 	ErrUnsignedHeaders
 	ErrMissingDateHeader
 	ErrInvalidQuerySignatureAlgo
@@ -187,6 +194,9 @@ const (
 	ErrBucketTaggingNotFound
 	ErrObjectLockInvalidHeaders
 	ErrInvalidTagDirective
+	ErrMissingPOSTPolicy
+	ErrUnsupportedSignature
+	ErrUnsupportedECDSAP256SHA256
 	// Add new error codes here.
 
 	// SSE-S3 related API errors
@@ -396,6 +406,15 @@ func (e errorCodeMap) ToAPIErr(errCode APIErrorCode) APIError {
 	return e.ToAPIErrWithErr(errCode, nil)
 }
 
+// HasCode returns whether the the API error corresponds to the error code.
+func (e errorCodeMap) IsCode(apiError APIError, errCode APIErrorCode) bool {
+	codeAPIError, ok := e[errCode]
+	if !ok {
+		codeAPIError = e[ErrInternalError]
+	}
+	return apiError.Code == codeAPIError.Code
+}
+
 // error code to APIError structure, these fields carry respective
 // descriptions for all the error responses.
 var errorCodes = errorCodeMap{
@@ -466,7 +485,7 @@ var errorCodes = errorCodeMap{
 	},
 	ErrBadDigest: {
 		Code:           "BadDigest",
-		Description:    "The Content-Md5 you specified did not match what we received.",
+		Description:    "The Content-MD5 or checksum value that you specified did not match what the server received.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrEntityTooSmall: {
@@ -521,7 +540,7 @@ var errorCodes = errorCodeMap{
 	},
 	ErrInvalidDigest: {
 		Code:           "InvalidDigest",
-		Description:    "The Content-Md5 you specified is not valid.",
+		Description:    "The Content-MD5 or checksum value that you specified is not valid.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrInvalidRange: {
@@ -544,9 +563,19 @@ var errorCodes = errorCodeMap{
 		Description:    "You must provide the Content-Length HTTP header.",
 		HTTPStatusCode: http.StatusLengthRequired,
 	},
+	ErrContentLengthWithTransferEncoding: {
+		Code:           "InvalidRequest",
+		Description:    "Cannot specify both Content-Length and Transfer-Encoding HTTP headers.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
 	ErrMissingContentMD5: {
 		Code:           "MissingContentMD5",
 		Description:    "Missing required header for this request: Content-Md5.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidContentSHA256: {
+		Code:           "InvalidArgument",
+		Description:    "x-amz-content-sha256 must be UNSIGNED-PAYLOAD, STREAMING-AWS4-HMAC-SHA256-PAYLOAD, or a valid sha256 value.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrMissingSecurityHeader: {
@@ -714,6 +743,11 @@ var errorCodes = errorCodeMap{
 		Description:    "X-Amz-Date must be in the ISO8601 Long Format \"yyyyMMdd'T'HHmmss'Z'\"",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
+	ErrMalformedPOSTDate: {
+		Code:           "InvalidArgument",
+		Description:    "X-Amz-Date must be formated via ISO8601 Long format",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
 	ErrMalformedCredentialDate: {
 		Code:           "AuthorizationQueryParametersError",
 		Description:    "Error parsing the X-Amz-Credential parameter; incorrect date format. This date in the credential must be in the format \"yyyyMMdd\".",
@@ -782,6 +816,11 @@ var errorCodes = errorCodeMap{
 	ErrRequestNotReadyYet: {
 		Code:           "AccessDenied",
 		Description:    "Request is not valid yet",
+		HTTPStatusCode: http.StatusForbidden,
+	},
+	ErrRequestNotReadyYetOrExpired: {
+		Code:           "AccessDenied",
+		Description:    "Request is not valid yet or has expired",
 		HTTPStatusCode: http.StatusForbidden,
 	},
 	ErrSlowDown: {
@@ -963,6 +1002,21 @@ var errorCodes = errorCodeMap{
 		Code:           "RestoreAlreadyInProgress",
 		Description:    "Object restore is already in progress",
 		HTTPStatusCode: http.StatusConflict,
+	},
+	ErrMissingPOSTPolicy: {
+		Code:           "InvalidArgument",
+		Description:    "Bucket POST must contain a field named 'policy'.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrUnsupportedSignature: {
+		Code:           "UnsupportedSignature",
+		Description:    "The provided request is signed with an unsupported STS Token version or the signature version is not supported.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrUnsupportedECDSAP256SHA256: {
+		Code:           "NotImplemented",
+		Description:    "The AWS4-ECDSA-P256-SHA256 algorithm is not implemented yet.",
+		HTTPStatusCode: http.StatusNotImplemented,
 	},
 	/// Bucket notification related errors.
 	ErrEventNotification: {
@@ -2161,6 +2215,102 @@ func ToAPIError(ctx context.Context, err error) APIError {
 	}
 
 	return apiErr
+}
+
+// awsigAPIErrorCodes maps awsig errors to APIErrorCodes.
+var awsigAPIErrorCodes = map[error]APIErrorCode {
+	awsig.ErrAuthorizationHeaderMalformed: ErrAuthorizationHeaderMalformed,
+	awsig.ErrEntityTooLarge:               ErrEntityTooLarge,
+	awsig.ErrEntityTooSmall:               ErrEntityTooSmall,
+	awsig.ErrIncompleteBody:               ErrIncompleteBody,
+	awsig.ErrInvalidDigest:                ErrInvalidDigest,
+	awsig.ErrMissingContentLength: 	       ErrMissingContentLength,
+	awsig.ErrMissingSecurityHeader:        ErrMissingSecurityHeader,
+	awsig.ErrUnsupportedSignature:         ErrUnsupportedSignature,
+	awsig.ErrInvalidSignature:             ErrSignatureDoesNotMatch,
+	awsig.ErrMissingAuthenticationToken:   ErrAccessDenied,
+	awsig.ErrRequestTimeTooSkewed:         ErrRequestTimeTooSkewed,
+	awsig.ErrSignatureDoesNotMatch:        ErrSignatureDoesNotMatch,
+	awsig.ErrInvalidAccessKeyID:           ErrInvalidAccessKeyID,
+	awsig.ErrNotImplemented:               ErrUnsupportedECDSAP256SHA256,
+}
+
+// awsigErrToAPIErrorCode converts an awsig error to an APIErrorCode.
+func awsigErrToAPIErrorCode(err error) (apiErrCode APIErrorCode, found bool) {
+	for awsigErr, code := range awsigAPIErrorCodes {
+		if errors.Is(err, awsigErr) {
+			return code, true
+		}
+	}
+
+	var errMsg string
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		errMsg = cases.Lower(language.AmericanEnglish).String(unwrapped.Error())
+	}
+
+	switch {
+	case errors.Is(err, awsig.ErrBadDigest):
+		if strings.Contains(errMsg, "sha256 do not match") {
+			return ErrContentSHA256Mismatch, true
+		}
+		return ErrBadDigest, true
+	case errors.Is(err, awsig.ErrAuthorizationQueryParametersError):
+		switch {
+		case strings.HasPrefix(errMsg, "the x-amz-expires query parameter is negative"):
+			return ErrNegativeExpires, true
+		case strings.HasPrefix(errMsg, "the x-amz-expires query parameter exceeds the maximum"):
+			return ErrMaximumExpires, true
+		}
+	case errors.Is(err, awsig.ErrInvalidRequest):
+		switch {
+		case strings.HasPrefix(errMsg, "the policy form field is missing"):
+			return ErrMissingPOSTPolicy, true
+		case strings.HasPrefix(errMsg, "the x-amz-date or date header does not contain a valid date"):
+			return ErrMalformedDate, true
+		case strings.HasPrefix(errMsg, "the expires query parameter does not contain a valid integer"):
+			return ErrMalformedExpires, true
+		case strings.HasPrefix(errMsg, "unable to parse multipart form data"):
+			return ErrMalformedPOSTRequest, true
+		case strings.HasPrefix(errMsg, "the x-amz-decoded-content-length header does not contain a valid integer"):
+			// It seems inappropriate to treat an invalid X-Amz-Decoded-Content-Length header the same as
+			// a missing Content-Length header, but this is consistent with S3's behavior.
+			return ErrMissingContentLength, true
+		case strings.HasPrefix(errMsg, "the content-length header must have been omitted"):
+			// S3 exhibits different behavior when a request has both the Content-Length and
+			// Transfer-Encoding headers.
+			//
+			// When S3 encounters a chunked request with the Content-Length header, it validates the request
+			// as if it were non-chunked request, returning a SignatureDoesNotMatch error because the client
+			// calculated its signature for a chunked request and S3 did not.
+			//
+			// When S3 encounters a non-chunked request with the Transfer-Encoding header, it immediately
+			// closes the connection.
+			//
+			// We are unable to be completely consistent with S3's behavior at this point,
+			// so we return a custom error.
+			return ErrContentLengthWithTransferEncoding, true
+		case strings.HasPrefix(errMsg, "the x-amz-content-sha256 header does not contain a valid value"):
+			return ErrInvalidContentSHA256, true
+		case strings.HasPrefix(errMsg, "the x-amz-date form field does not contain a valid date"):
+			return ErrMalformedPOSTDate, true
+		case strings.HasPrefix(errMsg, "the x-amz-date query parameter does not contain a valid date"):
+			return ErrMalformedPresignedDate, true
+		}
+	case errors.Is(err, awsig.ErrAccessDenied):
+		switch {
+		case strings.HasPrefix(errMsg, "the request is not yet valid"):
+			return ErrRequestNotReadyYet, true
+		case strings.HasPrefix(errMsg, "the request has expired"):
+			return ErrExpiredPresignRequest, true
+		default:
+			// For SigV2 presigned requests, awsig.ErrAccessDenied is returned without a message
+			// if the request is either expired or not yet valid. Since we cannot distinguish
+			// between these cases, we return a custom error covering both of them.
+			return ErrRequestNotReadyYetOrExpired, true
+		}
+	}
+
+	return ErrNone, false
 }
 
 // GetAPIError provides API Error for input API error code.

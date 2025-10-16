@@ -70,6 +70,7 @@ require (
 	golang.org/x/crypto v0.0.0-20220112180741-5e0467b6c7ce
 	golang.org/x/net v0.0.0-20211112202133-69e39bad7dc2
 	golang.org/x/sys v0.0.0-20220111092808-5a964db01320
+	golang.org/x/text v0.3.6
 	gopkg.in/yaml.v2 v2.3.0
 )
 
@@ -111,7 +112,6 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/willf/bitset v1.1.11 // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
-	golang.org/x/text v0.3.6 // indirect
 	golang.org/x/time v0.0.0-20211116232009-f0f3c7e86c11 // indirect
 	google.golang.org/protobuf v1.23.0 // indirect
 	gopkg.in/ini.v1 v1.57.0 // indirect
