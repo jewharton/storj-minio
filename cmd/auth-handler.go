@@ -717,6 +717,45 @@ func isPutActionAllowed(ctx context.Context, atype authType, bucketName, objectN
 	return ErrAccessDenied
 }
 
+func (api ObjectAPIHandlers) verifyPutObjectRequest(ctx context.Context, r *http.Request, rAuthType authType, clientETag etag.ETag) (reader io.Reader, s3Err APIErrorCode) {
+	// Disallow streaming types other than "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	if rAuthType == authTypePresigned || rAuthType == authTypeSigned {
+		sha256hex := getContentSha256Cksum(r, serviceS3)
+		if strings.HasPrefix(sha256hex, streamingPrefix) {
+			return nil, ErrSignatureVersionNotSupported
+		}
+	}
+
+	if api.awsig.mode != awsigVerificationOff {
+		_, s3Err := awsigVerifyRequest(ctx, r, api.awsig.verifier)
+		if s3Err != ErrNone {
+			return nil, s3Err
+		}
+	}
+
+	reader = r.Body
+
+	switch rAuthType {
+	case authTypeStreamingSigned:
+		// Initialize stream signature verifier.
+		reader, s3Err = newSignV4ChunkedReader(r)
+	case authTypeSignedV2, authTypePresignedV2:
+		s3Err = isReqAuthenticatedV2(r)
+	case authTypePresigned, authTypeSigned:
+		s3Err = reqSignatureV4Verify(r, globalServerRegion, serviceS3)
+	}
+	if s3Err != ErrNone && api.awsig.mode == AwsigVerificationWithDefaultFallback {
+		if api.awsig.onUncaughtError != nil {
+			api.awsig.onUncaughtError(ctx, errorCodes.ToAPIErr(s3Err))
+		}
+	}
+
+	if s3Err != ErrNone {
+		return nil, s3Err
+	}
+	return reader, ErrNone
+}
+
 func awsigVerifyRequest(ctx context.Context, r *http.Request, verifier *awsig.V2V4[AwsigAuthData]) (vr awsig.VerifiedRequest[AwsigAuthData], s3Error APIErrorCode) {
 	vHostBucket, err := getVirtualHostBucket(r.Host, globalDomainNames)
 	if err != nil {
