@@ -32,6 +32,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/amwolff/awsig"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/s2"
 	"github.com/klauspost/readahead"
@@ -43,6 +44,7 @@ import (
 	xhttp "storj.io/minio/cmd/http"
 	"storj.io/minio/cmd/logger"
 	"storj.io/minio/pkg/bucket/lifecycle"
+	"storj.io/minio/pkg/etag"
 	"storj.io/minio/pkg/hash"
 	"storj.io/minio/pkg/ioutil"
 	"storj.io/minio/pkg/trie"
@@ -864,6 +866,23 @@ func sealETagFn(key crypto.ObjectKey) SealMD5CurrFn {
 		return sealETag(key, md5sumcurr)
 	}
 	return fn
+}
+
+// awsigReaderTagger wraps awsig.Reader and implements the etag.Tagger interface.
+type awsigReaderTagger struct {
+	awsig.Reader
+}
+
+// Ensure that awsigReaderTagger implements etag.Tagger.
+var _ etag.Tagger = (*awsigReaderTagger)(nil)
+
+// ETag returns an ETag based on the underlying awsig.Reader's MD5 checksum.
+func (t *awsigReaderTagger) ETag() etag.ETag {
+	checksums, err := t.Checksums()
+	if err != nil {
+		return etag.ETag{}
+	}
+	return etag.ETag(checksums[awsig.AlgorithmMD5])
 }
 
 // CleanMinioInternalMetadataKeys removes X-Amz-Meta- prefix from minio internal
