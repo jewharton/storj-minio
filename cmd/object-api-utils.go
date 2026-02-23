@@ -31,6 +31,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/amwolff/awsig"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/s2"
 	"github.com/klauspost/readahead"
@@ -945,4 +946,36 @@ func compressSelfTest() {
 		logger.Fatal(errSelfTestFailure, "compress: self-test roundtrip mismatch.")
 
 	}
+}
+
+type wrappingAwsigReader struct {
+	io.Reader
+	awsigReader awsig.Reader
+}
+
+// newWrappingAwsigReader returns an implementation of awsig.Reader that wraps
+// an io.Reader and exposes checksums computed by an underlying awsig.Reader.
+//
+// The provided io.Reader should wrap the awsig.Reader. For example, the
+// io.Reader may perform transformations such as compression to the data returned
+// by its underlying awsig.Reader.
+//
+//   awsigVerifier := awsig.NewV2V4(...)
+//   awsigReader := awsigVerifier.Verify(...)
+//   // Create an io.Reader that transforms the data returned by the awsig.Reader.
+//   compressionReader := Compress(awsigReader)
+//   // Create an awsig.Reader that reads and returns the transformed data
+//   // and exposes the checksums of the original data computed by the
+//   // underlying awsig.Reader.
+//   compressionAwsigReader := newWrappingAwsigReader(compressionReader, awsigReader)
+//
+func newWrappingAwsigReader(wrapped io.Reader, awsigReader awsig.Reader) awsig.Reader {
+	return &wrappingAwsigReader{
+		Reader:      wrapped,
+		awsigReader: awsigReader,
+	}
+}
+
+func (reader *wrappingAwsigReader) Checksums() (map[awsig.ChecksumAlgorithm][]byte, error) {
+	return reader.awsigReader.Checksums()
 }

@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,7 @@ import (
 	"storj.io/minio/cmd/logger"
 	"storj.io/minio/pkg/auth"
 	"storj.io/minio/pkg/handlers"
+	"storj.io/minio/pkg/hash"
 	"storj.io/minio/pkg/madmin"
 )
 
@@ -194,6 +196,108 @@ func extractMetadataFromMime(ctx context.Context, v textproto.MIMEHeader, m map[
 		}
 	}
 	return nil
+}
+
+type extractedChecksumOptions struct {
+	algorithm   hash.Algorithm
+	base64Value string
+	trailing    bool
+}
+
+func extractChecksumOptions(h http.Header) (opts extractedChecksumOptions, s3Error APIErrorCode) {
+	var algoFound bool
+	for header, values := range h {
+		if algoStr, ok := splitChecksumAlgorithmHeader(header); ok {
+			if algoFound {
+				return extractedChecksumOptions{}, ErrMultipleChecksumHeaders
+			}
+			algoFound = true
+
+			algo, ok := parseChecksumAlgorithm(algoStr)
+			if !ok {
+				return extractedChecksumOptions{}, ErrInvalidChecksumAlgorithmHeader
+			}
+
+			if !isBase64ChecksumValid(algo, values[0]) {
+				return extractedChecksumOptions{}, ErrInvalidChecksumValue
+			}
+
+			opts.algorithm = algo
+			opts.base64Value = values[0]
+		}
+	}
+
+	if trailingHeaders := h.Get("X-Amz-Trailer"); trailingHeaders != "" {
+		for header := range strings.SplitSeq(trailingHeaders, ",") {
+			if algoStr, ok := splitChecksumAlgorithmHeader(header); ok {
+				if algoFound {
+					return extractedChecksumOptions{}, ErrMultipleChecksumHeaders
+				}
+				algoFound = true
+
+				algo, ok := parseChecksumAlgorithm(algoStr)
+				if !ok {
+					return extractedChecksumOptions{}, ErrInvalidChecksumAlgorithmHeader
+				}
+				opts.algorithm = algo
+				opts.trailing = true
+			}
+		}
+	}
+
+	if sdkAlgo := h.Get("X-Amz-Sdk-Checksum-Algorithm"); sdkAlgo != "" {
+		if opts.algorithm == hash.AlgorithmNone {
+			return extractedChecksumOptions{}, ErrUnpairedSdkChecksumAlgorithm
+		}
+
+		algo, ok := parseChecksumAlgorithm(sdkAlgo)
+		if !ok || algo != opts.algorithm {
+			return extractedChecksumOptions{}, ErrSdkChecksumAlgorithmMismatch
+		}
+	}
+
+	return opts, ErrNone
+}
+
+func parseChecksumAlgorithm(algoStr string) (algo hash.Algorithm, ok bool) {
+	switch strings.ToUpper(algoStr) {
+	case "CRC32":
+		return hash.AlgorithmCRC32, true
+	case "CRC32C":
+		return hash.AlgorithmCRC32C, true
+	case "CRC64NVME":
+		return hash.AlgorithmCRC64NVME, true
+	case "SHA1":
+		return hash.AlgorithmSHA1, true
+	case "SHA256":
+		return hash.AlgorithmSHA256, true
+	default:
+		return hash.AlgorithmNone, false
+	}
+}
+
+// checksumAlgorithmFromHeaderKey takes a header of the form "X-Amz-Checksum-<algorithm>"
+// and returns the "<algorithm>" part. It returns an empty string and false if the header
+// isn't of this form or if it's "X-Amz-Checksum-Type" or "X-Amz-Checksum-Algorithm".
+func splitChecksumAlgorithmHeader(header string) (algo string, ok bool) {
+	if !strings.HasPrefix(header, xhttp.AmzChecksumAlgorithmPrefix) {
+		return "", false
+	}
+	if header == xhttp.AmzChecksumType || header == xhttp.AmzChecksumAlgorithm {
+		return "", false
+	}
+	return header[len(xhttp.AmzChecksumAlgorithmPrefix):], true
+}
+
+func isBase64ChecksumValid(algo hash.Algorithm, checksum string) bool {
+	if len(checksum) != base64.StdEncoding.EncodedLen(algo.DigestLen()) {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(checksum)
+	if err != nil || len(decoded) != algo.DigestLen() {
+		return false
+	}
+	return true
 }
 
 // The Query string for the redirect URL the client is

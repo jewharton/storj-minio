@@ -29,6 +29,7 @@ import (
 	"storj.io/minio/pkg/bucket/policy"
 	"storj.io/minio/pkg/bucket/versioning"
 	"storj.io/minio/pkg/event"
+	"storj.io/minio/pkg/hash"
 	"storj.io/minio/pkg/madmin"
 )
 
@@ -48,6 +49,8 @@ type ObjectOptions struct {
 	MTime                time.Time      // Is only set in POST/PUT operations
 	Expires              time.Time      // Is only used in POST/PUT operations
 	PostPolicy           PostPolicyForm // Is only used in POST/PUT operations
+
+	ChecksumAlgorithm hash.Algorithm // Is only useful for PutObject
 
 	Retention                 *objectlock.ObjectRetention // Optional retention configuration for the object
 	BypassGovernanceRetention bool                        // Is only useful for DeleteObject(s)

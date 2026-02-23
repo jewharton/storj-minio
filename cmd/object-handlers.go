@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amwolff/awsig"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
@@ -1522,11 +1523,20 @@ func (api ObjectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		metadata[xhttp.AmzObjectTagging] = objTags
 	}
 
+	checksumOpts, s3Err := extractChecksumOptions(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+	if checksumOpts.algorithm != hash.AlgorithmNone && !api.awsig.checksumsEnabled {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
 	var (
 		md5hex              = clientETag.String()
 		sha256hex           = ""
 		reader    io.Reader = r.Body
-		s3Err     APIErrorCode
 		putObject = objectAPI.PutObject
 	)
 
@@ -1536,7 +1546,7 @@ func (api ObjectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	reader, s3Err = api.verifyPutObjectRequest(ctx, r, rAuthType)
+	reader, s3Err = api.verifyPutObjectRequest(ctx, r, rAuthType, clientETag, checksumOpts)
 	if s3Err != ErrNone {
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
 		return
@@ -1565,25 +1575,39 @@ func (api ObjectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		metadata[ReservedMetadataPrefix+"compression"] = compressionAlgorithmV2
 		metadata[ReservedMetadataPrefix+"actual-size"] = strconv.FormatInt(size, 10)
 
-		actualReader, err := hash.NewDefaultReader(reader, size, md5hex, sha256hex, actualSize)
-		if err != nil {
-			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-			return
+		if awsigReader, ok := reader.(awsig.Reader); ok {
+			s2c := newS2CompressReader(awsigReader, actualSize)
+			defer s2c.Close()
+			reader = newWrappingAwsigReader(s2c, awsigReader)
+		} else {
+			actualReader, err := hash.NewDefaultReader(reader, size, md5hex, sha256hex, actualSize)
+			if err != nil {
+				WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			s2c := newS2CompressReader(actualReader, actualSize)
+			defer s2c.Close()
+			reader = etag.Wrap(s2c, actualReader)
 		}
 
-		// Set compression metrics.
-		s2c := newS2CompressReader(actualReader, actualSize)
-		defer s2c.Close()
-		reader = etag.Wrap(s2c, actualReader)
 		size = -1   // Since compressed size is un-predictable.
 		md5hex = "" // Do not try to verify the content.
 		sha256hex = ""
 	}
 
-	hashReader, err := hash.NewDefaultReader(reader, size, md5hex, sha256hex, actualSize)
-	if err != nil {
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
+	var hashReader hash.Reader
+	if hr, ok := reader.(hash.Reader); ok {
+		// A hash reader may have already been created in the block above that handles compression
+		hashReader = hr
+	} else if awsigReader, ok := reader.(awsig.Reader); ok {
+		// An awsig reader may have been returned by verifyPutObjectRequest
+		hashReader = hash.NewAwsigReader(awsigReader, size, actualSize)
+	} else {
+		hashReader, err = hash.NewDefaultReader(reader, size, md5hex, sha256hex, actualSize)
+		if err != nil {
+			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+			return
+		}
 	}
 
 	// get gateway encryption options
@@ -1593,6 +1617,8 @@ func (api ObjectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
 	}
+
+	opts.ChecksumAlgorithm = checksumOpts.algorithm
 
 	if cacheAPI, exists := api.cacheAPI(); exists {
 		putObject = cacheAPI.PutObject
@@ -1802,11 +1828,23 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		return
 	}
 
+	checksumOpts, s3Err := extractChecksumOptions(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	// It isn't possible to specify the expected checksums of each object in the archive,
+	// so whatever checksum options the client may provide are useless to us. Disallow them for this reason.
+	if checksumOpts.algorithm != hash.AlgorithmNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
 	var (
 		md5hex              = clientETag.String()
 		sha256hex           = ""
 		reader    io.Reader = r.Body
-		s3Err     APIErrorCode
 		putObject = objectAPI.PutObject
 	)
 
@@ -1816,7 +1854,7 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	reader, s3Err = api.verifyPutObjectRequest(ctx, r, rAuthType)
+	reader, s3Err = api.verifyPutObjectRequest(ctx, r, rAuthType, clientETag, extractedChecksumOptions{})
 	if s3Err != ErrNone {
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
 		return
@@ -1827,10 +1865,16 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		sha256hex = getContentSha256Cksum(r, serviceS3)
 	}
 
-	hreader, err := hash.NewDefaultReader(reader, size, md5hex, sha256hex, size)
-	if err != nil {
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
+	var hashReader hash.Reader
+	if awsigReader, ok := reader.(awsig.Reader); ok {
+		// An awsig reader may have been returned by verifyPutObjectRequest
+		hashReader = hash.NewAwsigReader(awsigReader, size, size)
+	} else {
+		hashReader, err = hash.NewDefaultReader(reader, size, md5hex, sha256hex, size)
+		if err != nil {
+			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+			return
+		}
 	}
 
 	if err := enforceBucketQuota(ctx, bucket, size); err != nil {
@@ -1851,7 +1895,7 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		putObject = cacheAPI.PutObject
 	}
 
-	putObjectTar := func(reader io.Reader, info os.FileInfo, object string) {
+	putObjectTar := func(hashReader hash.Reader, info os.FileInfo, object string) {
 		size := info.Size()
 		metadata := map[string]string{
 			xhttp.AmzStorageClass: sc,
@@ -1863,23 +1907,22 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 			metadata[ReservedMetadataPrefix+"compression"] = compressionAlgorithmV2
 			metadata[ReservedMetadataPrefix+"actual-size"] = strconv.FormatInt(size, 10)
 
-			actualReader, err := hash.NewDefaultReader(reader, size, "", "", actualSize)
-			if err != nil {
-				WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-				return
+			s2c := newS2CompressReader(reader, actualSize)
+			defer s2c.Close()
+
+			if awsigReader, ok := reader.(awsig.Reader); ok {
+				innerReader := newWrappingAwsigReader(s2c, awsigReader)
+				hashReader = hash.NewAwsigReader(innerReader, size, actualSize)
+			} else {
+				innerReader := etag.Wrap(s2c, reader)
+				reader, err = hash.NewDefaultReader(innerReader, size, "", "", actualSize)
+				if err != nil {
+					WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+					return
+				}
 			}
 
-			// Set compression metrics.
-			s2c := newS2CompressReader(actualReader, actualSize)
-			defer s2c.Close()
-			reader = etag.Wrap(s2c, actualReader)
 			size = -1 // Since compressed size is un-predictable.
-		}
-
-		hashReader, err := hash.NewDefaultReader(reader, size, "", "", actualSize)
-		if err != nil {
-			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-			return
 		}
 
 		// get encryption options
@@ -1966,9 +2009,9 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		}
 	}
 
-	untar(hreader, putObjectTar)
+	untar(hashReader, putObjectTar)
 
-	checksums, err := hreader.Checksums()
+	checksums, err := hashReader.Checksums()
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
@@ -1976,7 +2019,7 @@ func (api ObjectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 
 	md5, ok := checksums[hash.AlgorithmMD5]
 	if !ok {
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, errMissingComputedMD5), r.URL, guessIsBrowserReq(r))
+		WriteErrorResponse(ctx, w, ToAPIError(ctx, errors.New("no MD5 was computed")), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
@@ -2385,6 +2428,16 @@ func (api ObjectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		return
 	}
 
+	checksumOpts, s3Err := extractChecksumOptions(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+	if checksumOpts.algorithm != hash.AlgorithmNone && !api.awsig.checksumsEnabled {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
 	var (
 		md5hex              = clientETag.String()
 		sha256hex           = ""
@@ -2396,7 +2449,7 @@ func (api ObjectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	reader, s3Error = api.verifyPutObjectRequest(ctx, r, rAuthType)
+	reader, s3Error = api.verifyPutObjectRequest(ctx, r, rAuthType, clientETag, checksumOpts)
 	if s3Error != ErrNone {
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL, guessIsBrowserReq(r))
 		return
@@ -2412,8 +2465,6 @@ func (api ObjectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	actualSize := size
-
 	// get encryption options
 	var opts ObjectOptions
 	if crypto.SSEC.IsRequested(r.Header) {
@@ -2424,13 +2475,21 @@ func (api ObjectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		}
 	}
 
-	hashReader, err := hash.NewDefaultReader(reader, size, md5hex, sha256hex, actualSize)
-	if err != nil {
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
+	opts.ChecksumAlgorithm = checksumOpts.algorithm
+
+	var hashReader hash.Reader
+	if awsigReader, ok := reader.(awsig.Reader); ok {
+		hashReader = hash.NewAwsigReader(awsigReader, size, size)
+	} else {
+		var err error
+		hashReader, err = hash.NewDefaultReader(reader, size, md5hex, sha256hex, size)
+		if err != nil {
+			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+			return
+		}
 	}
-	rawReader := hashReader
-	pReader := NewPutObjReader(rawReader)
+
+	pReader := NewPutObjReader(hashReader)
 
 	putObjectPart := objectAPI.PutObjectPart
 
@@ -2447,6 +2506,11 @@ func (api ObjectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 	// clients expect the ETag header key to be literally "ETag" - not "Etag" (case-sensitive).
 	// Therefore, we have to set the ETag directly as map entry.
 	w.Header()[xhttp.ETag] = []string{"\"" + etag + "\""}
+
+	if partInfo.ChecksumAlgorithm != hash.AlgorithmNone {
+		algoHeader := xhttp.AmzChecksumAlgorithmPrefix + partInfo.ChecksumAlgorithm.String()
+		w.Header().Set(algoHeader, partInfo.ChecksumValue)
+	}
 
 	writeSuccessResponseHeadersOnly(w)
 }

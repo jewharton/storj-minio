@@ -718,13 +718,24 @@ func isPutActionAllowed(ctx context.Context, atype authType, bucketName, objectN
 	return ErrAccessDenied
 }
 
-func (api ObjectAPIHandlers) verifyPutObjectRequest(ctx context.Context, r *http.Request, rAuthType authType) (reader io.Reader, s3Err APIErrorCode) {
-	// awsig contains support for more streaming types than we want to support
-	// right now, so disallow them before we verify the request with awsig.
+func (api ObjectAPIHandlers) verifyPutObjectRequest(ctx context.Context, r *http.Request, rAuthType authType, contentMD5 []byte, checksumOpts extractedChecksumOptions) (reader io.Reader, s3Err APIErrorCode) {
+	// awsig supports additional streaming signature types (e.g.
+	// STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER) that are not supported
+	// by MinIO's default request verification logic.
+	//
+	// For the AwsigVerificationWithDefaultFallback mode, awsig must only be
+	// used in a way that is fully compatible with MinIO's default verification
+	// logic. Therefore, any streaming types that are not supported by the
+	// default logic must be rejected before awsig is used to verify the request.
+	//
+	// Only AwsigVerificationReplace is allowed to enable the full set of awsig
+	// features. For all other modes, these additional streaming types are
+	// rejected to preserve parity with the default verification logic.
+	//
 	// Note that rAuthType will be authTypeStreamingHMACSHA256Payload if the
-	// streaming type is "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" (which we want
-	// to support), so it won't be affected.
-	if rAuthType == authTypePresigned || rAuthType == authTypeSigned {
+	// streaming type is "STREAMING-AWS4-HMAC-SHA256-PAYLOAD", which is supported
+	// by MinIO and therefore not affected by this restriction.
+	if api.awsig.mode != AwsigVerificationReplace && (rAuthType == authTypePresigned || rAuthType == authTypeSigned) {
 		sha256hex := getContentSha256Cksum(r, serviceS3)
 		if strings.HasPrefix(sha256hex, streamingPrefix) {
 			return nil, ErrSignatureVersionNotSupported
@@ -732,9 +743,54 @@ func (api ObjectAPIHandlers) verifyPutObjectRequest(ctx context.Context, r *http
 	}
 
 	if api.awsig.mode != awsigVerificationOff {
-		_, s3Err := awsigVerifyRequest(ctx, r, api.awsig.verifier)
+		vr, s3Err := awsigVerifyRequest(ctx, r, api.awsig.verifier)
 		if s3Err != ErrNone {
 			return nil, s3Err
+		}
+
+		if api.awsig.mode == AwsigVerificationReplace {
+			var checksumReqs []awsig.ChecksumRequest
+
+			if contentMD5 != nil {
+				contentMD5Str := base64.StdEncoding.EncodeToString(contentMD5)
+				checksumReq, err := awsig.NewChecksumRequest(awsig.AlgorithmMD5, contentMD5Str)
+				if err != nil {
+					logger.LogIf(ctx, fmt.Errorf("Error creating awsig checksum request for content MD5: %w", err))
+					return nil, ErrInternalError
+				}
+				checksumReqs = append(checksumReqs, checksumReq)
+			}
+
+			if checksumOpts.algorithm != hash.AlgorithmNone {
+				awsigAlgo, ok := hash.AlgorithmToAwsig(checksumOpts.algorithm)
+				if !ok {
+					logger.LogIf(ctx, fmt.Errorf("Unexpected checksum algorithm %d", checksumOpts.algorithm))
+					return nil, ErrInternalError
+				}
+
+				var (
+					checksumReq awsig.ChecksumRequest
+					err         error
+				)
+				if checksumOpts.trailing {
+					checksumReq, err = awsig.NewTrailingChecksumRequest(awsigAlgo)
+				} else {
+					checksumReq, err = awsig.NewChecksumRequest(awsigAlgo, checksumOpts.base64Value)
+				}
+				if err != nil {
+					logger.LogIf(ctx, fmt.Errorf("Error creating awsig checksum request: %w", err))
+					return nil, ErrInternalError
+				}
+				checksumReqs = append(checksumReqs, checksumReq)
+			}
+
+			awsigReader, err := vr.Reader(checksumReqs...)
+			if err != nil {
+				logger.LogIf(ctx, fmt.Errorf("Error creating awsig reader: %w", err))
+				return nil, ErrInternalError
+			}
+
+			return awsigReader, ErrNone
 		}
 	}
 

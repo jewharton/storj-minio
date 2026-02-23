@@ -75,9 +75,10 @@ type ObjectAPIHandlers struct {
 }
 
 type awsigSettings struct {
-	verifier        *awsig.V2V4[AwsigAuthData]
-	mode            AwsigVerificationMode
-	onUncaughtError func(context.Context, APIError)
+	verifier         *awsig.V2V4[AwsigAuthData]
+	mode             AwsigVerificationMode
+	checksumsEnabled bool
+	onUncaughtError  func(context.Context, APIError)
 }
 
 // AwsigAuthData represents supplementary auth data provided by awsig.CredentialsProvider.
@@ -121,29 +122,41 @@ func WithCacheObjectLayer(cacheAPI func() CacheObjectLayer) ObjectAPIHandlersOpt
 	}
 }
 
+type AwsigParams struct {
+	CredentialsProvider    awsig.CredentialsProvider[AwsigAuthData]
+	Mode                   AwsigVerificationMode
+	ObjectChecksumsEnabled bool
+	// OnUncaughtError will be called if the default signature verification logic fails
+	// after awsig verification succeeds. It is unly used if Mode is AwsigVerificationWithDefaultFallback.
+	OnUncaughtError func(context.Context, APIError)
+}
+
 // WithAwsigVerifier returns an option for constructing an ObjectAPIHandlers with experimental support
 // for verifying requests using the github.com/amwolff/awsig module.
-// If mode is AwsigVerificationWithDefaultFallback, onUncaughtError will be called if the default signature
-// verification logic fails after awsig verification succeeds.
-func WithAwsigVerifier(credsProvider awsig.CredentialsProvider[AwsigAuthData], mode AwsigVerificationMode, onUncaughtError func(context.Context, APIError)) ObjectAPIHandlersOption {
+func WithAwsigVerifier(params AwsigParams) ObjectAPIHandlersOption {
 	return func(api *ObjectAPIHandlers) error {
-		if credsProvider == nil {
+		if params.CredentialsProvider == nil {
 			return errors.New("credentials provider must not be nil")
 		}
 
-		switch mode {
-		case AwsigVerificationReplace, AwsigVerificationWithDefaultFallback:
+		switch params.Mode {
+		case AwsigVerificationReplace:
+		case AwsigVerificationWithDefaultFallback:
+			if params.ObjectChecksumsEnabled {
+				return fmt.Errorf("object checksumming may only be enabled when the verification mode is AwsigVerificationReplace")
+			}
 		default:
-			return fmt.Errorf("invalid awsig verification mode %d", mode)
+			return fmt.Errorf("invalid awsig verification mode %d", params.Mode)
 		}
 
 		api.awsig = awsigSettings{
-			verifier: awsig.NewV2V4(credsProvider, awsig.V4Config{
+			verifier: awsig.NewV2V4(params.CredentialsProvider, awsig.V4Config{
 				Service:                string(serviceS3),
 				SkipRegionVerification: true,
 			}),
-			mode:            mode,
-			onUncaughtError: onUncaughtError,
+			mode:             params.Mode,
+			checksumsEnabled: params.ObjectChecksumsEnabled,
+			onUncaughtError:  params.OnUncaughtError,
 		}
 
 		return nil
@@ -160,7 +173,8 @@ const (
 	AwsigVerificationReplace
 	// AwsigVerificationWithDefaultFallback indicates that awsig verification should be performed in addition to
 	// the default MinIO request verification. Awsig verification is always performed first. If it
-	// succeeds, the request is then verified using the default logic.
+	// succeeds, the request is then verified using the default logic. Object checksumming is unsupported
+	// for this mode.
 	AwsigVerificationWithDefaultFallback
 )
 

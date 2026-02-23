@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/amwolff/awsig"
@@ -202,6 +203,12 @@ const (
 	ErrMissingPOSTPolicy
 	ErrUnsupportedSignature
 	ErrUnsupportedECDSAP256SHA256
+	ErrChecksumsUnsupported
+	ErrMultipleChecksumHeaders
+	ErrInvalidChecksumAlgorithmHeader
+	ErrInvalidChecksumValue
+	ErrUnpairedSdkChecksumAlgorithm
+	ErrSdkChecksumAlgorithmMismatch
 	// Add new error codes here.
 
 	// SSE-S3 related API errors
@@ -490,7 +497,7 @@ var errorCodes = errorCodeMap{
 	},
 	ErrBadDigest: {
 		Code:           "BadDigest",
-		Description:    "The Content-MD5 or checksum value that you specified did not match what the server received.",
+		Description:    "The Content-MD5 you specified did not match what we received.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrEntityTooSmall: {
@@ -545,7 +552,7 @@ var errorCodes = errorCodeMap{
 	},
 	ErrInvalidDigest: {
 		Code:           "InvalidDigest",
-		Description:    "The Content-MD5 or checksum value that you specified is not valid.",
+		Description:    "The Content-MD5 you specified was invalid.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrInvalidRange: {
@@ -835,7 +842,7 @@ var errorCodes = errorCodeMap{
 	},
 	ErrBadRequest: {
 		Code:           "BadRequest",
-		Description:    "400 BadRequest",
+		Description:    "The request is malformed or invalid.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrKeyTooLongError: {
@@ -1017,6 +1024,36 @@ var errorCodes = errorCodeMap{
 		Code:           "NotImplemented",
 		Description:    "The AWS4-ECDSA-P256-SHA256 algorithm is not implemented yet.",
 		HTTPStatusCode: http.StatusNotImplemented,
+	},
+	ErrChecksumsUnsupported: {
+		Code:           "NotImplemented",
+		Description:    "Checksum options are not supported.",
+		HTTPStatusCode: http.StatusNotImplemented,
+	},
+	ErrMultipleChecksumHeaders: {
+		Code:           "InvalidRequest",
+		Description:    "Expected a single x-amz-checksum- header. Multiple checksum types are not allowed.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidChecksumAlgorithmHeader: {
+		Code:           "InvalidRequest",
+		Description:    "The algorithm type you specified in the x-amz-checksum- header is invalid.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidChecksumValue: {
+		Code:           "InvalidRequest",
+		Description:    "The value for the x-amz-checksum- header is invalid.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrUnpairedSdkChecksumAlgorithm: {
+		Code:           "InvalidRequest",
+		Description:    "The x-amz-sdk-checksum-algorithm header was found, but no corresponding x-amz-checksum-* or x-amz-trailer headers were found.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrSdkChecksumAlgorithmMismatch: {
+		Code:           "InvalidRequest",
+		Description:    "The value for the x-amz-sdk-checksum-algorithm header is invalid.",
+		HTTPStatusCode: http.StatusBadRequest,
 	},
 	/// Bucket notification related errors.
 	ErrEventNotification: {
@@ -1935,6 +1972,11 @@ func toAPIErrorCode(ctx context.Context, err error) (apiErr APIErrorCode) {
 		apiErr = ErrInvalidDecompressedSize
 	}
 
+	// awsig errors
+	if awsigErrCode, found := awsigToAPIErrorCode(err); found {
+		return awsigErrCode
+	}
+
 	if apiErr != ErrNone {
 		// If there was a match in the above switch case.
 		return apiErr
@@ -2137,8 +2179,12 @@ func ToAPIError(ctx context.Context, err error) APIError {
 	if apiErr.Code == "InternalError" {
 		// If we see an internal error try to interpret
 		// any underlying errors if possible depending on
-		// their internal error types. This code is only
-		// useful with gateway implementations.
+		// their internal error types.
+
+		if apiErr, found := awsigToAPIError(err); found {
+			return apiErr
+		}
+
 		switch e := err.(type) {
 		case InvalidArgument:
 			apiErr = APIError{
@@ -2226,16 +2272,22 @@ var awsigAPIErrorCodes = map[error]APIErrorCode {
 	awsig.ErrAccessDenied:                      ErrAccessDenied,
 	awsig.ErrAuthorizationHeaderMalformed:      ErrAuthorizationHeaderMalformed,
 	awsig.ErrContentLengthWithTransferEncoding: ErrContentLengthWithTransferEncoding,
+	awsig.ErrEntityTooLarge:                    ErrEntityTooLarge,
+	awsig.ErrEntityTooSmall:                    ErrEntityTooSmall,
 	awsig.ErrInvalidAccessKeyID:                ErrInvalidAccessKeyID,
 	awsig.ErrInvalidDateHeader:                 ErrMalformedDate,
+	awsig.ErrInvalidDigest:                     ErrInvalidDigest,
 	awsig.ErrInvalidPOSTDate:                   ErrMalformedPOSTDate,
 	awsig.ErrInvalidPresignedDate:              ErrMalformedPresignedDate,
 	awsig.ErrInvalidPresignedExpiration:        ErrMalformedExpires,
+	awsig.ErrInvalidPresignedXAmzContentSHA256: ErrContentSHA256Mismatch,
+	awsig.ErrInvalidRequest:                    ErrBadRequest,
 	awsig.ErrInvalidSignature:                  ErrSignatureDoesNotMatch,
 	awsig.ErrInvalidXAmzContentSHA256:          ErrInvalidContentSHA256,
 	awsig.ErrInvalidXAmzDecodedContentLength:   ErrMissingContentLength,
 	awsig.ErrMalformedPOSTRequest:              ErrMalformedPOSTRequest,
 	awsig.ErrMissingContentLength: 	            ErrMissingContentLength,
+	awsig.ErrMissingPOSTFile:                   ErrPOSTFileRequired,
 	awsig.ErrMissingPOSTPolicy:                 ErrMissingPOSTPolicy,
 	awsig.ErrMissingSecurityHeader:             ErrMissingSecurityHeader,
 	awsig.ErrNegativePresignedExpiration:       ErrNegativeExpires,
@@ -2256,6 +2308,45 @@ func awsigToAPIErrorCode(err error) (apiErrCode APIErrorCode, found bool) {
 		}
 	}
 	return ErrNone, false
+}
+
+// awsigToAPIError converts an awsig error to an APIError. It only considers those awsig errors
+// that are not handled by awsigToAPIErrorCode.
+func awsigToAPIError(err error) (apiErr APIError, found bool) {
+	var mismatchErr awsig.ChecksumMismatchError
+	if errors.As(err, &mismatchErr) {
+		// When S3 determines what information to include in an error for a request containing
+		// multiple integrity failures, Content-MD5 takes priority over X-Amz-Content-Sha256,
+		// which takes priority over X-Amz-Checksum-<algorithm>.
+		slices.SortFunc(mismatchErr.Mismatches, func(a awsig.ChecksumMismatch, b awsig.ChecksumMismatch) int {
+			ord := func(mismatch awsig.ChecksumMismatch) int {
+				switch {
+				case a.Algorithm == awsig.AlgorithmMD5:
+					return 0
+				case a.Algorithm == awsig.AlgorithmSHA256 && a.IsContentSHA256:
+					return 1
+				default:
+					return 2
+				}
+			}
+			return ord(a) - ord(b)
+		})
+
+		mismatch := mismatchErr.Mismatches[0]
+		switch {
+		case mismatch.Algorithm == awsig.AlgorithmMD5:
+			return errorCodes.ToAPIErr(ErrBadDigest), true
+		case mismatch.Algorithm == awsig.AlgorithmSHA256 && mismatch.IsContentSHA256:
+			return errorCodes.ToAPIErr(ErrContentSHA256Mismatch), true
+		default:
+			return APIError{
+				Code:           "BadDigest",
+				Description:    "The "+strings.ToUpper(mismatch.Algorithm.String())+" you specified did not match the calculated checksum.",
+				HTTPStatusCode: http.StatusBadRequest,
+			}, true
+		}
+	}
+	return APIError{}, false
 }
 
 // GetAPIError provides API Error for input API error code.

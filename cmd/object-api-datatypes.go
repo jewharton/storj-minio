@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"math"
 	"time"
@@ -79,6 +80,43 @@ type BucketInfo struct {
 	Created time.Time
 }
 
+// ChecksumType represents the strategy used to compute an object's checksum.
+type ChecksumType int
+
+const (
+	// ChecksumTypeNone represents an unset checksum type.
+	ChecksumTypeNone = ChecksumType(0)
+	// ChecksumTypeFullObject indicates that an object's checksum is computed over the object's contents.
+	ChecksumTypeFullObject = ChecksumType(1)
+	// ChecksumTypeComposite indicates that an object's checksum is computed over the checksums of its parts.
+	ChecksumTypeComposite = ChecksumType(2)
+)
+
+// String returns the string representation of the checksum type.
+func (checksumType ChecksumType) String() string {
+	switch checksumType {
+	case ChecksumTypeNone:
+		return ""
+	case ChecksumTypeFullObject:
+		return "FULL_OBJECT"
+	case ChecksumTypeComposite:
+		return "COMPOSITE"
+	default:
+		return fmt.Sprintf("%[1]T(%[1]d)", checksumType)
+	}
+}
+
+func parseChecksumType(typeStr string) (checksumType ChecksumType, ok bool) {
+	switch typeStr {
+	case ChecksumTypeFullObject.String():
+		return ChecksumTypeFullObject, true
+	case ChecksumTypeComposite.String():
+		return ChecksumTypeComposite, true
+	default:
+		return ChecksumTypeNone, false
+	}
+}
+
 // ObjectInfo - represents object metadata.
 type ObjectInfo struct {
 	// Name of the bucket.
@@ -101,6 +139,16 @@ type ObjectInfo struct {
 
 	// The ETag stored in the gateway backend
 	InnerETag string
+
+	// ChecksumAlgorithm is the algorithm used to compute the object's checksum.
+	// If the object has no checksum, it is hash.AlgorithmNone.
+	ChecksumAlgorithm hash.Algorithm
+
+	// ChecksumType indicates the strategy used to compute the object's checksum.
+	ChecksumType ChecksumType
+
+	// ChecksumValue is the base64-encoded value of the object's checksum.
+	ChecksumValue string
 
 	// Version ID of this object.
 	VersionID string
@@ -153,7 +201,7 @@ type ObjectInfo struct {
 
 	// Implements writer and reader used by CopyObject API
 	Writer       io.WriteCloser `json:"-"`
-	Reader       hash.Reader   `json:"-"`
+	Reader       hash.Reader    `json:"-"`
 	PutObjReader *PutObjReader  `json:"-"`
 
 	metadataOnly bool
@@ -444,6 +492,13 @@ type PartInfo struct {
 
 	// Entity tag returned when the part was initially uploaded.
 	ETag string
+
+	// ChecksumAlgorithm is the algorithm used to compute the part's checksum.
+	// If the part has no checksum, it is hash.AlgorithmNone.
+	ChecksumAlgorithm hash.Algorithm
+
+	// ChecksumValue is the base64-encoded value of the part's checksum.
+	ChecksumValue string
 
 	// Size in bytes of the part.
 	Size int64

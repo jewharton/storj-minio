@@ -26,6 +26,7 @@ import (
 
 	xhttp "storj.io/minio/cmd/http"
 	"storj.io/minio/pkg/bucket/lifecycle"
+	"storj.io/minio/pkg/hash"
 )
 
 var (
@@ -240,6 +241,12 @@ func setPutObjHeaders(w http.ResponseWriter, objInfo ObjectInfo, delete bool) {
 	// Therefore, we have to set the ETag directly as map entry.
 	if objInfo.ETag != "" && !delete {
 		w.Header()[xhttp.ETag] = []string{`"` + objInfo.ETag + `"`}
+	}
+
+	if objInfo.ChecksumAlgorithm != hash.AlgorithmNone {
+		algoHeader := xhttp.AmzChecksumAlgorithmPrefix + objInfo.ChecksumAlgorithm.String()
+		w.Header().Set(algoHeader, objInfo.ChecksumValue)
+		w.Header().Set(xhttp.AmzChecksumType, objInfo.ChecksumType.String())
 	}
 
 	// Set the relevant version ID as part of the response header.

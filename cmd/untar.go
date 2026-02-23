@@ -30,6 +30,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	gzip "github.com/klauspost/pgzip"
 	"github.com/pierrec/lz4"
+	"storj.io/minio/pkg/hash"
 )
 
 func detect(r *bufio.Reader) format {
@@ -91,35 +92,38 @@ var magicHeaders = []struct {
 	},
 }
 
-func untar(r io.Reader, putObject func(reader io.Reader, info os.FileInfo, name string)) error {
-	bf := bufio.NewReader(r)
-	switch f := detect(bf); f {
+func untar(hashReader hash.Reader, putObject func(hashReader hash.Reader, info os.FileInfo, name string)) error {
+	var compressedReader io.Reader
+
+	bufferedReader := bufio.NewReader(hashReader)
+	switch f := detect(bufferedReader); f {
 	case formatGzip:
-		gz, err := gzip.NewReader(bf)
+		gz, err := gzip.NewReader(bufferedReader)
 		if err != nil {
 			return err
 		}
 		defer gz.Close()
-		r = gz
+		compressedReader = gz
 	case formatS2:
-		r = s2.NewReader(bf)
+		compressedReader = s2.NewReader(bufferedReader)
 	case formatZstd:
-		dec, err := zstd.NewReader(bf)
+		dec, err := zstd.NewReader(bufferedReader)
 		if err != nil {
 			return err
 		}
 		defer dec.Close()
-		r = dec
+		compressedReader = dec
 	case formatBZ2:
-		r = bzip2.NewReader(bf)
+		compressedReader = bzip2.NewReader(bufferedReader)
 	case formatLZ4:
-		r = lz4.NewReader(bf)
+		compressedReader = lz4.NewReader(bufferedReader)
 	case formatUnknown:
-		r = bf
+		compressedReader = bufferedReader
 	default:
 		return fmt.Errorf("Unsupported format %s", f)
 	}
-	tarReader := tar.NewReader(r)
+
+	tarReader := tar.NewReader(compressedReader)
 	for {
 		header, err := tarReader.Next()
 
@@ -145,9 +149,11 @@ func untar(r io.Reader, putObject func(reader io.Reader, info os.FileInfo, name 
 
 		switch header.Typeflag {
 		case tar.TypeDir: // = directory
-			putObject(tarReader, header.FileInfo(), trimLeadingSlash(pathJoin(name, slashSeparator)))
+			hr := hash.Wrap(tarReader, hashReader, -1, -1)
+			putObject(hr, header.FileInfo(), trimLeadingSlash(pathJoin(name, slashSeparator)))
 		case tar.TypeReg, tar.TypeChar, tar.TypeBlock, tar.TypeFifo, tar.TypeGNUSparse: // = regular
-			putObject(tarReader, header.FileInfo(), trimLeadingSlash(path.Clean(name)))
+			hr := hash.Wrap(tarReader, hashReader, -1, -1)
+			putObject(hr, header.FileInfo(), trimLeadingSlash(path.Clean(name)))
 		default:
 			// ignore symlink'ed
 			continue
