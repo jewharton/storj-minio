@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/amwolff/awsig"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/minio/minio-go/v7/pkg/tags"
@@ -686,28 +687,116 @@ func (api ObjectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	reader, err := r.MultipartReader()
-	if err != nil {
-		logger.LogIf(ctx, err)
-		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPOSTRequest), r.URL, guessIsBrowserReq(r))
-		return
-	}
+	useAwsig := api.awsig.mode == AwsigVerificationReplace
 
-	fileBody, fileName, formValues, err := readPostPolicyForm(reader)
-	if err != nil {
-		logger.LogIf(ctx, err, logger.Application)
-		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPOSTRequest), r.URL, guessIsBrowserReq(r))
-		return
-	}
+	var (
+		hashReader   hash.Reader
+		fileName     string
+		formValues   http.Header
+		checksumAlgo hash.Algorithm
+	)
+	if useAwsig {
+		vr, s3Error := awsigVerifyRequest(ctx, r, api.awsig.verifier)
+		if s3Error != ErrNone {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL, guessIsBrowserReq(r))
+			return
+		}
 
-	// Check if file is provided, error out otherwise.
-	if fileBody == nil {
-		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPOSTFileRequired), r.URL, guessIsBrowserReq(r))
-		return
-	}
+		postForm := vr.PostForm()
+		fileName = postForm.FileName()
 
-	// Close multipart file
-	defer fileBody.Close()
+		formValues = make(http.Header)
+		for key, elements := range postForm {
+			formValues.Set(key, elements[0].Value)
+		}
+
+		var checksumReqs []awsig.ChecksumRequest
+
+		// Amazon S3's documentation suggests that the "X-Amz-Checksum-Algorithm" header is
+		// required for specifying checksums and that a corresponding "X-Amz-Checksum-<algorithm>"
+		// header must be present if the former header is present. However, testing shows that
+		// neither of these are true. S3 only considers the "X-Amz-Checksum-<algorithm>" header.
+		// "X-Amz-Checksum-Algorithm" is ignored.
+
+		var base64Value string
+		checksumAlgo, base64Value, s3Error = extractXAmzChecksumAlgorithm(formValues)
+		if s3Error != ErrNone {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		if checksumAlgo != hash.AlgorithmNone {
+			awsigAlgo, ok := hash.AlgorithmToAwsig(checksumAlgo)
+			if !ok {
+				err = fmt.Errorf("cannot convert %[1]T(%[1]d) to %[2]T", checksumAlgo, awsigAlgo)
+				WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			checksumReq, err := awsig.NewChecksumRequest(awsigAlgo, base64Value)
+			if err != nil {
+				WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			checksumReqs = append(checksumReqs, checksumReq)
+		}
+
+		if values := formValues.Values(xhttp.ContentMD5); len(values) > 0 {
+			md5Str := values[0]
+			if md5Str == "" {
+				WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrBadDigest), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			if _, err := base64.StdEncoding.DecodeString(md5Str); err != nil {
+				WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrBadDigest), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			checksumReq, err := awsig.NewChecksumRequest(awsig.AlgorithmMD5, base64Value)
+			if err != nil {
+				WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+				return
+			}
+			checksumReqs = append(checksumReqs, checksumReq)
+		}
+
+		awsigReader, err := vr.Reader(checksumReqs...)
+		if err != nil {
+			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		hashReader = hash.NewAwsigReader(awsigReader, -1, -1)
+	} else {
+		reader, err := r.MultipartReader()
+		if err != nil {
+			logger.LogIf(ctx, err)
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPOSTRequest), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		var fileBody io.ReadCloser
+		fileBody, fileName, formValues, err = readPostPolicyForm(reader)
+		if err != nil {
+			logger.LogIf(ctx, err, logger.Application)
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPOSTRequest), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		// Check if file is provided, error out otherwise.
+		if fileBody == nil {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPOSTFileRequired), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		// Close multipart file
+		defer fileBody.Close()
+
+		hashReader, err = hash.NewDefaultReader(fileBody, -1, "", "", -1)
+		if err != nil {
+			logger.LogIf(ctx, err)
+			WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+			return
+		}
+	}
 
 	formValues.Set("Bucket", bucket)
 	if fileName != "" && strings.Contains(formValues.Get("Key"), "${filename}") {
@@ -728,16 +817,16 @@ func (api ObjectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Verify policy signature.
-	cred, errCode := doesPolicySignatureMatch(ctx, formValues)
-	if errCode != ErrNone {
-		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(errCode), r.URL, guessIsBrowserReq(r))
-		return
-	}
+	if !useAwsig {
+		// Verify policy signature.
+		cred, errCode := doesPolicySignatureMatch(ctx, formValues)
+		if errCode != ErrNone {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(errCode), r.URL, guessIsBrowserReq(r))
+			return
+		}
 
-	// Once signature is validated, check if the user has
-	// explicit permissions for the user.
-	{
+		// Once signature is validated, check if the user has
+		// explicit permissions for the user.
 		token := formValues.Get(xhttp.AmzSecurityToken)
 		if token != "" && cred.AccessKey == "" {
 			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrNoAccessKey), r.URL, guessIsBrowserReq(r))
@@ -806,13 +895,6 @@ func (api ObjectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	hashReader, err := hash.NewDefaultReader(fileBody, -1, "", "", -1)
-	if err != nil {
-		logger.LogIf(ctx, err)
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
-	}
-
 	// Check if bucket encryption is enabled
 	if _, err = globalBucketSSEConfigSys.Get(bucket); err == nil || globalAutoEncryption {
 		// This request header needs to be set prior to setting ObjectOptions
@@ -829,6 +911,7 @@ func (api ObjectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 		return
 	}
 	opts.PostPolicy = postPolicyForm
+	opts.ChecksumAlgorithm = checksumAlgo
 
 	var pReader *PutObjReader
 	if objectAPI.IsEncryptionSupported() {
@@ -879,6 +962,12 @@ func (api ObjectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 	}
 
 	w.Header().Set(xhttp.Location, getObjectLocation(r, globalDomainNames, bucket, object))
+
+	if objInfo.ChecksumAlgorithm != hash.AlgorithmNone {
+		algoHeader := xhttp.AmzChecksumAlgorithmPrefix + objInfo.ChecksumAlgorithm.String()
+		w.Header().Set(algoHeader, objInfo.ChecksumValue)
+		w.Header().Set(xhttp.AmzChecksumType, objInfo.ChecksumType.String())
+	}
 
 	// Notify object created event.
 	defer sendEvent(eventArgs{

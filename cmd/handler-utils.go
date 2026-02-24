@@ -205,26 +205,16 @@ type extractedChecksumOptions struct {
 }
 
 func extractChecksumOptions(h http.Header) (opts extractedChecksumOptions, s3Error APIErrorCode) {
+	algo, base64Value, s3Err := extractXAmzChecksumAlgorithm(h)
+	if s3Err != ErrNone {
+		return extractedChecksumOptions{}, s3Err
+	}
+
 	var algoFound bool
-	for header, values := range h {
-		if algoStr, ok := splitChecksumAlgorithmHeader(header); ok {
-			if algoFound {
-				return extractedChecksumOptions{}, ErrMultipleChecksumHeaders
-			}
-			algoFound = true
-
-			algo, ok := parseChecksumAlgorithm(algoStr)
-			if !ok {
-				return extractedChecksumOptions{}, ErrInvalidChecksumAlgorithmHeader
-			}
-
-			if !isBase64ChecksumValid(algo, values[0]) {
-				return extractedChecksumOptions{}, ErrInvalidChecksumValue
-			}
-
-			opts.algorithm = algo
-			opts.base64Value = values[0]
-		}
+	if algo != hash.AlgorithmNone {
+		opts.algorithm = algo
+		opts.base64Value = base64Value
+		algoFound = true
 	}
 
 	if trailingHeaders := h.Get("X-Amz-Trailer"); trailingHeaders != "" {
@@ -257,6 +247,31 @@ func extractChecksumOptions(h http.Header) (opts extractedChecksumOptions, s3Err
 	}
 
 	return opts, ErrNone
+}
+
+func extractXAmzChecksumAlgorithm(h http.Header) (algo hash.Algorithm, base64Value string, s3Error APIErrorCode) {
+	var algoFound bool
+	for header, values := range h {
+		if algoStr, ok := splitChecksumAlgorithmHeader(header); ok {
+			if algoFound {
+				return hash.AlgorithmNone, "", ErrMultipleChecksumHeaders
+			}
+			algoFound = true
+
+			var ok bool
+			algo, ok = parseChecksumAlgorithm(algoStr)
+			if !ok {
+				return hash.AlgorithmNone, "", ErrInvalidChecksumAlgorithmHeader
+			}
+
+			if !isBase64ChecksumValid(algo, values[0]) {
+				return hash.AlgorithmNone, "", ErrInvalidChecksumValue
+			}
+
+			base64Value = values[0]
+		}
+	}
+	return algo, base64Value, ErrNone
 }
 
 func parseChecksumAlgorithm(algoStr string) (algo hash.Algorithm, ok bool) {
