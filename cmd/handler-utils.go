@@ -264,7 +264,7 @@ func extractXAmzChecksumAlgorithm(h http.Header) (algo hash.Algorithm, base64Val
 				return hash.AlgorithmNone, "", ErrInvalidChecksumAlgorithmHeader
 			}
 
-			if !isBase64ChecksumValid(algo, values[0]) {
+			if !isBase64ChecksumValid(algo, values[0], nil) {
 				return hash.AlgorithmNone, "", ErrInvalidChecksumValue
 			}
 
@@ -272,6 +272,18 @@ func extractXAmzChecksumAlgorithm(h http.Header) (algo hash.Algorithm, base64Val
 		}
 	}
 	return algo, base64Value, ErrNone
+}
+
+func extractChecksumType(h http.Header) (checksumType ChecksumType, s3Error APIErrorCode) {
+	checksumTypeStr, ok := getHeader(h, xhttp.AmzChecksumType)
+	if !ok {
+		return ChecksumTypeNone, ErrNone
+	}
+	checksumType, ok = parseChecksumType(checksumTypeStr)
+	if !ok {
+		return ChecksumTypeNone, ErrInvalidChecksumType
+	}
+	return checksumType, ErrNone
 }
 
 func parseChecksumAlgorithm(algoStr string) (algo hash.Algorithm, ok bool) {
@@ -304,11 +316,11 @@ func splitChecksumAlgorithmHeader(header string) (algo string, ok bool) {
 	return header[len(xhttp.AmzChecksumAlgorithmPrefix):], true
 }
 
-func isBase64ChecksumValid(algo hash.Algorithm, checksum string) bool {
+func isBase64ChecksumValid(algo hash.Algorithm, checksum string, decodeBuf []byte) bool {
 	if len(checksum) != base64.StdEncoding.EncodedLen(algo.DigestLen()) {
 		return false
 	}
-	decoded, err := base64.StdEncoding.DecodeString(checksum)
+	decoded, err := base64.StdEncoding.AppendDecode(decodeBuf, []byte(checksum))
 	if err != nil || len(decoded) != algo.DigestLen() {
 		return false
 	}

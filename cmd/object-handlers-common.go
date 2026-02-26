@@ -276,3 +276,10 @@ func setPutObjHeaders(w http.ResponseWriter, objInfo ObjectInfo, delete bool) {
 		}
 	}
 }
+
+func getHeader(h http.Header, key string) (value string, found bool) {
+	if values, ok := h[http.CanonicalHeaderKey(key)]; ok {
+		return values[0], true
+	}
+	return "", false
+}

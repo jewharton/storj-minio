@@ -178,14 +178,14 @@ func TestHealObjectCorrupted(t *testing.T) {
 
 	// Create an object with multiple parts uploaded in decreasing
 	// part number.
-	uploadID, err := objLayer.NewMultipartUpload(ctx, bucket, object, opts)
+	info, err := objLayer.NewMultipartUpload(ctx, bucket, object, opts)
 	if err != nil {
 		t.Fatalf("Failed to create a multipart upload - %v", err)
 	}
 
 	var uploadedParts []CompletePart
 	for _, partID := range []int{2, 1} {
-		pInfo, err1 := objLayer.PutObjectPart(ctx, bucket, object, uploadID, partID, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), opts)
+		pInfo, err1 := objLayer.PutObjectPart(ctx, bucket, object, info.UploadID, partID, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), opts)
 		if err1 != nil {
 			t.Fatalf("Failed to upload a part - %v", err1)
 		}
@@ -195,7 +195,7 @@ func TestHealObjectCorrupted(t *testing.T) {
 		})
 	}
 
-	_, err = objLayer.CompleteMultipartUpload(ctx, bucket, object, uploadID, uploadedParts, ObjectOptions{})
+	_, err = objLayer.CompleteMultipartUpload(ctx, bucket, object, info.UploadID, uploadedParts, ObjectOptions{})
 	if err != nil {
 		t.Fatalf("Failed to complete multipart upload - %v", err)
 	}
@@ -328,14 +328,14 @@ func TestHealObjectErasure(t *testing.T) {
 
 	// Create an object with multiple parts uploaded in decreasing
 	// part number.
-	uploadID, err := obj.NewMultipartUpload(ctx, bucket, object, opts)
+	info, err := obj.NewMultipartUpload(ctx, bucket, object, opts)
 	if err != nil {
 		t.Fatalf("Failed to create a multipart upload - %v", err)
 	}
 
 	var uploadedParts []CompletePart
 	for _, partID := range []int{2, 1} {
-		pInfo, err1 := obj.PutObjectPart(ctx, bucket, object, uploadID, partID, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), opts)
+		pInfo, err1 := obj.PutObjectPart(ctx, bucket, object, info.UploadID, partID, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), opts)
 		if err1 != nil {
 			t.Fatalf("Failed to upload a part - %v", err1)
 		}
@@ -350,7 +350,7 @@ func TestHealObjectErasure(t *testing.T) {
 	er := z.serverPools[0].sets[0]
 	firstDisk := er.getDisks()[0]
 
-	_, err = obj.CompleteMultipartUpload(ctx, bucket, object, uploadID, uploadedParts, ObjectOptions{})
+	_, err = obj.CompleteMultipartUpload(ctx, bucket, object, info.UploadID, uploadedParts, ObjectOptions{})
 	if err != nil {
 		t.Fatalf("Failed to complete multipart upload - %v", err)
 	}

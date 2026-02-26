@@ -377,7 +377,7 @@ func testObjectAPIMultipartPutObjectStaleFiles(obj ObjectLayer, instanceType str
 	}
 	opts := ObjectOptions{}
 	// Initiate Multipart Upload on the above created bucket.
-	uploadID, err := obj.NewMultipartUpload(context.Background(), bucket, object, opts)
+	info, err := obj.NewMultipartUpload(context.Background(), bucket, object, opts)
 	if err != nil {
 		// Failed to create NewMultipartUpload, abort.
 		t.Fatalf("%s : %s", instanceType, err.Error())
@@ -389,7 +389,7 @@ func testObjectAPIMultipartPutObjectStaleFiles(obj ObjectLayer, instanceType str
 	md5Writer.Write(fiveMBBytes)
 	etag1 := hex.EncodeToString(md5Writer.Sum(nil))
 	sha256sum := ""
-	_, err = obj.PutObjectPart(context.Background(), bucket, object, uploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), int64(len(fiveMBBytes)), etag1, sha256sum), opts)
+	_, err = obj.PutObjectPart(context.Background(), bucket, object, info.UploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), int64(len(fiveMBBytes)), etag1, sha256sum), opts)
 	if err != nil {
 		// Failed to upload object part, abort.
 		t.Fatalf("%s : %s", instanceType, err.Error())
@@ -400,7 +400,7 @@ func testObjectAPIMultipartPutObjectStaleFiles(obj ObjectLayer, instanceType str
 	md5Writer = md5.New()
 	md5Writer.Write(data)
 	etag2 := hex.EncodeToString(md5Writer.Sum(nil))
-	_, err = obj.PutObjectPart(context.Background(), bucket, object, uploadID, 2, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), etag2, sha256sum), opts)
+	_, err = obj.PutObjectPart(context.Background(), bucket, object, info.UploadID, 2, mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), etag2, sha256sum), opts)
 	if err != nil {
 		// Failed to upload object part, abort.
 		t.Fatalf("%s : %s", instanceType, err.Error())
@@ -411,7 +411,7 @@ func testObjectAPIMultipartPutObjectStaleFiles(obj ObjectLayer, instanceType str
 		{ETag: etag1, PartNumber: 1},
 		{ETag: etag2, PartNumber: 2},
 	}
-	_, err = obj.CompleteMultipartUpload(context.Background(), bucket, object, uploadID, parts, ObjectOptions{})
+	_, err = obj.CompleteMultipartUpload(context.Background(), bucket, object, info.UploadID, parts, ObjectOptions{})
 	if err != nil {
 		// Failed to complete multipart upload, abort.
 		t.Fatalf("%s : %s", instanceType, err.Error())

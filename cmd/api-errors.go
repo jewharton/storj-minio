@@ -209,6 +209,11 @@ const (
 	ErrInvalidChecksumValue
 	ErrUnpairedSdkChecksumAlgorithm
 	ErrSdkChecksumAlgorithmMismatch
+	ErrInvalidChecksumAlgorithm
+	ErrInvalidChecksumType
+	ErrUnsupportedChecksumType
+	ErrChecksumTypeWithoutAlgorithm
+	ErrInvalidChecksumInXML
 	// Add new error codes here.
 
 	// SSE-S3 related API errors
@@ -1055,6 +1060,31 @@ var errorCodes = errorCodeMap{
 		Description:    "The value for the x-amz-sdk-checksum-algorithm header is invalid.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
+	ErrInvalidChecksumAlgorithm: {
+		Code:           "InvalidRequest",
+		Description:    "The provided checksum algorithm is unsupported. Please try again with any of the valid types: [CRC32, CRC32C, CRC64NVME, SHA1, SHA256]",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidChecksumType: {
+		Code:           "InvalidRequest",
+		Description:    "The value for the x-amz-checksum-type header is invalid.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrUnsupportedChecksumType: {
+		Code:           "InvalidRequest",
+		Description:    "The provided checksum type cannot be used with the provided checksum algorithm.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrChecksumTypeWithoutAlgorithm: {
+		Code:           "InvalidRequest",
+		Description:    "The x-amz-checksum-type header can only be used with the x-amz-checksum-algorithm header.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidChecksumInXML: {
+		Code:           "InvalidArgument",
+		Description:    "Invalid Base64 or multiple checksums present in request.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
 	/// Bucket notification related errors.
 	ErrEventNotification: {
 		Code:           "InvalidArgument",
@@ -1897,6 +1927,8 @@ func toAPIErrorCode(ctx context.Context, err error) (apiErr APIErrorCode) {
 	switch err {
 	case errInvalidArgument:
 		apiErr = ErrAdminInvalidArgument
+	case errMalformedXML:
+		apiErr = ErrMalformedXML
 	case errNoSuchUser:
 		apiErr = ErrAdminNoSuchUser
 	case errNoSuchServiceAccount:
@@ -1915,6 +1947,8 @@ func toAPIErrorCode(ctx context.Context, err error) (apiErr APIErrorCode) {
 		apiErr = ErrEntityTooLarge
 	case errDataTooSmall:
 		apiErr = ErrEntityTooSmall
+	case errInvalidChecksumInXML:
+		apiErr = ErrInvalidChecksumInXML
 	case errAuthentication:
 		apiErr = ErrAccessDenied
 	case auth.ErrInvalidAccessKeyLength:

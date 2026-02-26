@@ -32,6 +32,7 @@ import (
 	"storj.io/minio/cmd/logger"
 	"storj.io/minio/pkg/env"
 	"storj.io/minio/pkg/handlers"
+	"storj.io/minio/pkg/hash"
 )
 
 const (
@@ -367,6 +368,31 @@ type CompleteMultipartUploadResponse struct {
 	Bucket   string
 	Key      string
 	ETag     string
+
+	Checksum     ChecksumXML
+	ChecksumType string `xml:",omitempty"`
+}
+
+// Ensure that ChecksumXML implements xml.Marshaler.
+var _ xml.Marshaler = ChecksumXML{}
+
+// ChecksumXML is a convenience structure for XML-marshalling checksums in the format
+// "<Checksum{Algorithm}>value</Checksum{Algorithm}>".
+type ChecksumXML struct {
+	Algorithm hash.Algorithm
+	Value     string
+}
+
+// MarshalXML implements the xml.Marshaler interface.
+func (c ChecksumXML) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if c.Algorithm == hash.AlgorithmNone {
+		return nil
+	}
+	if !c.Algorithm.IsValid() {
+		return fmt.Errorf("invalid checksum algorithm %d", c.Algorithm)
+	}
+	start.Name.Local = checksumXMLPrefix + c.Algorithm.String()
+	return e.EncodeElement(c.Value, start)
 }
 
 // DeleteError structure.
@@ -642,22 +668,27 @@ func generateCopyObjectPartResponse(etag string, lastModified time.Time) CopyObj
 }
 
 // generates InitiateMultipartUploadResponse for given bucket, key and uploadID.
-func generateInitiateMultipartUploadResponse(bucket, key, uploadID string) InitiateMultipartUploadResponse {
+func generateInitiateMultipartUploadResponse(info MultipartInfo) InitiateMultipartUploadResponse {
 	return InitiateMultipartUploadResponse{
-		Bucket:   bucket,
-		Key:      key,
-		UploadID: uploadID,
+		Bucket:   info.Bucket,
+		Key:      info.Object,
+		UploadID: info.UploadID,
 	}
 }
 
 // generates CompleteMultipartUploadResponse for given bucket, key, location and ETag.
-func generateCompleteMultpartUploadResponse(bucket, key, location, etag string) CompleteMultipartUploadResponse {
+func generateCompleteMultpartUploadResponse(objInfo ObjectInfo, location string) CompleteMultipartUploadResponse {
 	return CompleteMultipartUploadResponse{
 		Location: location,
-		Bucket:   bucket,
-		Key:      key,
+		Bucket:   objInfo.Bucket,
+		Key:      objInfo.Name,
 		// AWS S3 quotes the ETag in XML, make sure we are compatible here.
-		ETag: "\"" + etag + "\"",
+		ETag: "\"" + objInfo.ETag + "\"",
+		Checksum: ChecksumXML{
+			Algorithm: objInfo.ChecksumAlgorithm,
+			Value:     objInfo.ChecksumValue,
+		},
+		ChecksumType: objInfo.ChecksumType.String(),
 	}
 }
 

@@ -55,18 +55,18 @@ func TestRepeatPutObjectPart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	uploadID, err := objLayer.NewMultipartUpload(ctx, "bucket1", "mpartObj1", opts)
+	info, err := objLayer.NewMultipartUpload(ctx, "bucket1", "mpartObj1", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fiveMBBytes := bytes.Repeat([]byte("a"), 5*humanize.MiByte)
 	md5Hex := getMD5Hash(fiveMBBytes)
-	_, err = objLayer.PutObjectPart(ctx, "bucket1", "mpartObj1", uploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), 5*humanize.MiByte, md5Hex, ""), opts)
+	_, err = objLayer.PutObjectPart(ctx, "bucket1", "mpartObj1", info.UploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), 5*humanize.MiByte, md5Hex, ""), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// PutObjectPart should succeed even if part already exists. ref: https://github.com/minio/minio/issues/1930
-	_, err = objLayer.PutObjectPart(ctx, "bucket1", "mpartObj1", uploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), 5*humanize.MiByte, md5Hex, ""), opts)
+	_, err = objLayer.PutObjectPart(ctx, "bucket1", "mpartObj1", info.UploadID, 1, mustGetPutObjReader(t, bytes.NewReader(fiveMBBytes), 5*humanize.MiByte, md5Hex, ""), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

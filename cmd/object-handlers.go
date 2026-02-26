@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -2140,35 +2141,78 @@ func (api ObjectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 	retPerms := isPutActionAllowed(ctx, getRequestAuthType(r), bucket, object, r, iampolicy.PutObjectRetentionAction)
 
 	retentionMode, retentionDate, legalHold, s3Err := parseObjectLockHeaders(ctx, r, bucket, object, retPerms)
-	if s3Err == ErrNone {
-		if retentionMode.Valid() {
-			if opts.Retention == nil {
-				opts.Retention = &objectlock.ObjectRetention{}
-			}
-			opts.Retention.Mode = retentionMode
-			opts.Retention.RetainUntilDate = retentionDate
-		}
-		if legalHold.Status.Valid() {
-			opts.LegalHold = &legalHold.Status
-		}
-	}
-
 	if s3Err != ErrNone {
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
-	uploadID, err := objectAPI.NewMultipartUpload(ctx, bucket, object, opts)
+	if retentionMode.Valid() {
+		if opts.Retention == nil {
+			opts.Retention = &objectlock.ObjectRetention{}
+		}
+		opts.Retention.Mode = retentionMode
+		opts.Retention.RetainUntilDate = retentionDate
+	}
+	if legalHold.Status.Valid() {
+		opts.LegalHold = &legalHold.Status
+	}
+
+	if checksumAlgoStr := r.Header.Get(xhttp.AmzChecksumAlgorithm); checksumAlgoStr != "" {
+		var ok bool
+		if opts.ChecksumAlgorithm, ok = parseChecksumAlgorithm(checksumAlgoStr); !ok {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksumAlgorithm), r.URL, guessIsBrowserReq(r))
+			return
+		}
+	}
+
+	opts.ChecksumType, s3Err = extractChecksumType(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	if opts.ChecksumAlgorithm == hash.AlgorithmNone {
+		if opts.ChecksumType != ChecksumTypeNone {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumTypeWithoutAlgorithm), r.URL, guessIsBrowserReq(r))
+			return
+		}
+	} else {
+		if !api.awsig.checksumsEnabled {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+			return
+		}
+
+		if opts.ChecksumType != ChecksumTypeNone {
+			var isChecksumTypeSupported bool
+			switch opts.ChecksumType {
+			case ChecksumTypeComposite:
+				isChecksumTypeSupported = opts.ChecksumAlgorithm != hash.AlgorithmCRC64NVME
+			case ChecksumTypeFullObject:
+				isChecksumTypeSupported = opts.ChecksumAlgorithm.IsCRC()
+			}
+			if !isChecksumTypeSupported {
+				WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrUnsupportedChecksumType), r.URL, guessIsBrowserReq(r))
+				return
+			}
+		}
+	}
+
+	info, err := objectAPI.NewMultipartUpload(ctx, bucket, object, opts)
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
-	response := generateInitiateMultipartUploadResponse(bucket, object, uploadID)
+	response := generateInitiateMultipartUploadResponse(info)
 	encodedSuccessResponse, err := EncodeResponse(response)
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
+	}
+
+	if info.ChecksumAlgorithm != hash.AlgorithmNone {
+		w.Header().Set(xhttp.AmzChecksumAlgorithm, info.ChecksumAlgorithm.String())
+		w.Header().Set(xhttp.AmzChecksumType, info.ChecksumType.String())
 	}
 
 	// Write success response.
@@ -2762,15 +2806,46 @@ func (api ObjectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 		return
 	}
 
+	checksumAlgo, checksumValue, s3Err := extractXAmzChecksumAlgorithm(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	checksumType, s3Err := extractChecksumType(r.Header)
+	if s3Err != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	hasChecksumOpts := checksumAlgo != hash.AlgorithmNone || checksumType != ChecksumTypeNone
+	if hasChecksumOpts && !api.awsig.checksumsEnabled {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	// SHA-256 produces the largest digests of all algorithms that we support.
+	maxBase64ChecksumLen := base64.StdEncoding.EncodedLen(hash.AlgorithmSHA256.DigestLen())
+	decodedChecksumBuf := make([]byte, base64.StdEncoding.DecodedLen(maxBase64ChecksumLen))
+
 	// Complete parts.
-	completeParts := make([]CompletePart, 0, len(complMultipartUpload.Parts))
-	for _, part := range complMultipartUpload.Parts {
-		part.ETag = canonicalizeETag(part.ETag)
-		completeParts = append(completeParts, part)
+	completeParts := complMultipartUpload.Parts
+	for i := range completeParts {
+		completeParts[i].ETag = canonicalizeETag(completeParts[i].ETag)
+
+		if completeParts[i].ChecksumAlgorithm != hash.AlgorithmNone {
+			if !isBase64ChecksumValid(completeParts[i].ChecksumAlgorithm, completeParts[i].ChecksumValue, decodedChecksumBuf[:0]) {
+				WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksumInXML), r.URL, guessIsBrowserReq(r))
+				return
+			}
+		}
 	}
 
 	opts := ObjectOptions{
-		IfNoneMatch: r.Header.Values(xhttp.IfNoneMatch),
+		IfNoneMatch:       r.Header.Values(xhttp.IfNoneMatch),
+		ChecksumAlgorithm: checksumAlgo,
+		ChecksumType:      checksumType,
+		ChecksumValue:     checksumValue,
 	}
 
 	completeMultiPartUpload := objectAPI.CompleteMultipartUpload
@@ -2822,7 +2897,7 @@ func (api ObjectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 	// Get object location.
 	location := getObjectLocation(r, globalDomainNames, bucket, object)
 	// Generate complete multipart response.
-	response := generateCompleteMultpartUploadResponse(bucket, object, location, objInfo.ETag)
+	response := generateCompleteMultpartUploadResponse(objInfo, location)
 	var encodedSuccessResponse []byte
 	if !headerWritten {
 		encodedSuccessResponse, err = EncodeResponse(response)

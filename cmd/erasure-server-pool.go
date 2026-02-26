@@ -1055,9 +1055,9 @@ func (z *erasureServerPools) ListMultipartUploads(ctx context.Context, bucket, p
 }
 
 // Initiate a new multipart upload on a hashedSet based on object name.
-func (z *erasureServerPools) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (string, error) {
+func (z *erasureServerPools) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (MultipartInfo, error) {
 	if err := checkNewMultipartArgs(ctx, bucket, object, z); err != nil {
-		return "", err
+		return MultipartInfo{}, err
 	}
 
 	if z.SinglePool() {
@@ -1067,7 +1067,7 @@ func (z *erasureServerPools) NewMultipartUpload(ctx context.Context, bucket, obj
 	for idx, pool := range z.serverPools {
 		result, err := pool.ListMultipartUploads(ctx, bucket, object, "", "", "", maxUploadsList)
 		if err != nil {
-			return "", err
+			return MultipartInfo{}, err
 		}
 		// If there is a multipart upload with the same bucket/object name,
 		// create the new multipart in the same pool, this will avoid
@@ -1080,7 +1080,7 @@ func (z *erasureServerPools) NewMultipartUpload(ctx context.Context, bucket, obj
 	// We multiply the size by 2 to account for erasure coding.
 	idx := z.getAvailablePoolIdx(ctx, (1<<30)*2)
 	if idx < 0 {
-		return "", toObjectErr(errDiskFull)
+		return MultipartInfo{}, toObjectErr(errDiskFull)
 	}
 
 	return z.serverPools[idx].NewMultipartUpload(ctx, bucket, object, opts)

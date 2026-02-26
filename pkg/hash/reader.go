@@ -64,6 +64,21 @@ func (algo Algorithm) DigestLen() int {
 	}
 }
 
+// IsCRC returns whether the algorithm is a Cyclic Redundancy Check algorithm.
+func (algo Algorithm) IsCRC() bool {
+	switch algo {
+	case AlgorithmCRC32, AlgorithmCRC32C, AlgorithmCRC64NVME:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsValid returns whether the algorithm is a recognized checksum algorithm.
+func (algo Algorithm) IsValid() bool {
+	return algo >= AlgorithmNone && algo <= AlgorithmSHA256
+}
+
 // Reader computes the checksum of read bytes.
 type Reader interface {
 	io.Reader

@@ -17,9 +17,11 @@
 package cmd
 
 import (
+	"encoding/xml"
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
@@ -28,6 +30,8 @@ import (
 	"storj.io/minio/pkg/hash"
 	"storj.io/minio/pkg/madmin"
 )
+
+const checksumXMLPrefix = "Checksum"
 
 // BackendType - represents different backend types.
 type BackendType int
@@ -296,6 +300,12 @@ type MultipartInfo struct {
 
 	// Any metadata set during InitMultipartUpload, including encryption headers.
 	UserDefined map[string]string
+
+	// ChecksumAlgorithm is the algorithm used to compute the checksum of the complete object.
+	ChecksumAlgorithm hash.Algorithm
+
+	// ChecksumType indicates the strategy used to compute the checksum of the complete object.
+	ChecksumType ChecksumType
 }
 
 // ListPartsInfo - represents list of all parts.
@@ -507,6 +517,9 @@ type PartInfo struct {
 	ActualSize int64
 }
 
+// Ensure that CompletePart implements xml.Unmarshaler.
+var _ xml.Unmarshaler = (*CompletePart)(nil)
+
 // CompletePart - represents the part that was completed, this is sent by the client
 // during CompleteMultipartUpload request.
 type CompletePart struct {
@@ -516,6 +529,51 @@ type CompletePart struct {
 
 	// Entity tag returned when the part was uploaded.
 	ETag string
+
+	// ChecksumAlgorithm is the algorithm used to compute the part's checksum.
+	ChecksumAlgorithm hash.Algorithm
+
+	// ChecksumValue is the base64-encoded value of the part's checksum.
+	ChecksumValue string
+}
+
+// UnmarshalXML implements the xml.Unmarshaler interface.
+func (part *CompletePart) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+    var raw struct {
+        PartNumber int
+        ETag       string
+        Checksums  []struct {
+            XMLName xml.Name
+            Value   string `xml:",chardata"`
+        } `xml:",any"`
+    }
+
+    if err := d.DecodeElement(&raw, &start); err != nil {
+        return err
+    }
+
+    part.PartNumber = raw.PartNumber
+    part.ETag = raw.ETag
+    part.ChecksumAlgorithm = hash.AlgorithmNone
+    part.ChecksumValue = ""
+
+    for _, c := range raw.Checksums {
+        name := c.XMLName.Local
+        if !strings.HasPrefix(name, checksumXMLPrefix) {
+            continue
+        }
+        algo, ok := parseChecksumAlgorithm(name[len(checksumXMLPrefix):])
+        if !ok || algo == part.ChecksumAlgorithm {
+            return errMalformedXML
+        }
+        if part.ChecksumAlgorithm != hash.AlgorithmNone {
+            return errInvalidChecksumInXML
+        }
+        part.ChecksumAlgorithm = algo
+        part.ChecksumValue = c.Value
+    }
+
+    return nil
 }
 
 // CompletedParts - is a collection satisfying sort.Interface.

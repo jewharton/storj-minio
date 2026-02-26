@@ -107,3 +107,9 @@ var errUploadIDNotFound = errors.New("Specified Upload ID is not found")
 
 // errMissingComputedMD5 is used when the MD5 computed over a request's body is missing.
 var errMissingComputedMD5 = errors.New("No MD5 was computed")
+
+// errInvalidChecksumInXML is returned when unmarshalling XML containing invalid checksum data.
+var errInvalidChecksumInXML = errors.New("Invalid checksum")
+
+// errMalformedXML is returned when an XML input is malformed.
+var errMalformedXML = errors.New("Malformed XML")

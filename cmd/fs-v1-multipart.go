@@ -213,13 +213,13 @@ func (fs *FSObjects) ListMultipartUploads(ctx context.Context, bucket, object, k
 // subsequent request each UUID is unique.
 //
 // Implements S3 compatible initiate multipart API.
-func (fs *FSObjects) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (string, error) {
+func (fs *FSObjects) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (MultipartInfo, error) {
 	if err := checkNewMultipartArgs(ctx, bucket, object, fs); err != nil {
-		return "", toObjectErr(err, bucket)
+		return MultipartInfo{}, toObjectErr(err, bucket)
 	}
 
 	if _, err := fs.statBucketDir(ctx, bucket); err != nil {
-		return "", toObjectErr(err, bucket)
+		return MultipartInfo{}, toObjectErr(err, bucket)
 	}
 
 	uploadID := mustGetUUID()
@@ -228,7 +228,7 @@ func (fs *FSObjects) NewMultipartUpload(ctx context.Context, bucket, object stri
 	err := mkdirAll(uploadIDDir, 0755)
 	if err != nil {
 		logger.LogIf(ctx, err)
-		return "", err
+		return MultipartInfo{}, err
 	}
 
 	// Initialize fs.json values.
@@ -238,15 +238,19 @@ func (fs *FSObjects) NewMultipartUpload(ctx context.Context, bucket, object stri
 	fsMetaBytes, err := json.Marshal(fsMeta)
 	if err != nil {
 		logger.LogIf(ctx, err)
-		return "", err
+		return MultipartInfo{}, err
 	}
 
 	if err = ioutil.WriteFile(pathJoin(uploadIDDir, fs.metaJSONFile), fsMetaBytes, 0644); err != nil {
 		logger.LogIf(ctx, err)
-		return "", err
+		return MultipartInfo{}, err
 	}
 
-	return uploadID, nil
+	return MultipartInfo{
+		Bucket:   bucket,
+		Object:   object,
+		UploadID: uploadID,
+	}, nil
 }
 
 // CopyObjectPart - similar to PutObjectPart but reads data from an existing

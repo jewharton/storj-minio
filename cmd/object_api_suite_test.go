@@ -95,7 +95,7 @@ func testMultipartObjectCreation(obj ObjectLayer, instanceType string, t TestErr
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}
-	uploadID, err := obj.NewMultipartUpload(context.Background(), "bucket", "key", opts)
+	info, err := obj.NewMultipartUpload(context.Background(), "bucket", "key", opts)
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}
@@ -106,7 +106,7 @@ func testMultipartObjectCreation(obj ObjectLayer, instanceType string, t TestErr
 		expectedETaghex := getMD5Hash(data)
 
 		var calcPartInfo PartInfo
-		calcPartInfo, err = obj.PutObjectPart(context.Background(), "bucket", "key", uploadID, i, mustGetPutObjReader(t, bytes.NewBuffer(data), int64(len(data)), expectedETaghex, ""), opts)
+		calcPartInfo, err = obj.PutObjectPart(context.Background(), "bucket", "key", info.UploadID, i, mustGetPutObjReader(t, bytes.NewBuffer(data), int64(len(data)), expectedETaghex, ""), opts)
 		if err != nil {
 			t.Errorf("%s: <ERROR> %s", instanceType, err)
 		}
@@ -118,7 +118,7 @@ func testMultipartObjectCreation(obj ObjectLayer, instanceType string, t TestErr
 			ETag:       calcPartInfo.ETag,
 		})
 	}
-	objInfo, err := obj.CompleteMultipartUpload(context.Background(), "bucket", "key", uploadID, completedParts.Parts, ObjectOptions{})
+	objInfo, err := obj.CompleteMultipartUpload(context.Background(), "bucket", "key", info.UploadID, completedParts.Parts, ObjectOptions{})
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}
@@ -139,7 +139,7 @@ func testMultipartObjectAbort(obj ObjectLayer, instanceType string, t TestErrHan
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}
-	uploadID, err := obj.NewMultipartUpload(context.Background(), "bucket", "key", opts)
+	info, err := obj.NewMultipartUpload(context.Background(), "bucket", "key", opts)
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}
@@ -157,7 +157,7 @@ func testMultipartObjectAbort(obj ObjectLayer, instanceType string, t TestErrHan
 
 		metadata["md5"] = expectedETaghex
 		var calcPartInfo PartInfo
-		calcPartInfo, err = obj.PutObjectPart(context.Background(), "bucket", "key", uploadID, i, mustGetPutObjReader(t, bytes.NewBufferString(randomString), int64(len(randomString)), expectedETaghex, ""), opts)
+		calcPartInfo, err = obj.PutObjectPart(context.Background(), "bucket", "key", info.UploadID, i, mustGetPutObjReader(t, bytes.NewBufferString(randomString), int64(len(randomString)), expectedETaghex, ""), opts)
 		if err != nil {
 			t.Fatalf("%s: <ERROR> %s", instanceType, err)
 		}
@@ -166,7 +166,7 @@ func testMultipartObjectAbort(obj ObjectLayer, instanceType string, t TestErrHan
 		}
 		parts[i] = expectedETaghex
 	}
-	err = obj.AbortMultipartUpload(context.Background(), "bucket", "key", uploadID, ObjectOptions{})
+	err = obj.AbortMultipartUpload(context.Background(), "bucket", "key", info.UploadID, ObjectOptions{})
 	if err != nil {
 		t.Fatalf("%s: <ERROR> %s", instanceType, err)
 	}

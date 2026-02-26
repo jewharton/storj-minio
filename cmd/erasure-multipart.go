@@ -350,12 +350,22 @@ func (er erasureObjects) newMultipartUpload(ctx context.Context, bucket string, 
 // subsequent request each UUID is unique.
 //
 // Implements S3 compatible initiate multipart API.
-func (er erasureObjects) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (string, error) {
+func (er erasureObjects) NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (MultipartInfo, error) {
 	// No metadata is set, allocate a new one.
 	if opts.UserDefined == nil {
 		opts.UserDefined = make(map[string]string)
 	}
-	return er.newMultipartUpload(ctx, bucket, object, opts)
+
+	uploadID, err := er.newMultipartUpload(ctx, bucket, object, opts)
+	if err != nil {
+		return MultipartInfo{}, err
+	}
+
+	return MultipartInfo{
+		Bucket:   bucket,
+		Object:   object,
+		UploadID: uploadID,
+	}, nil
 }
 
 // CopyObjectPart - reads incoming stream and internally erasure codes

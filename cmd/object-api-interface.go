@@ -50,7 +50,29 @@ type ObjectOptions struct {
 	Expires              time.Time      // Is only used in POST/PUT operations
 	PostPolicy           PostPolicyForm // Is only used in POST/PUT operations
 
-	ChecksumAlgorithm hash.Algorithm // Is only useful for PutObject
+	// ChecksumAlgorithm is an object's checksum algorithm. Its purpose depends on the operation:
+	//   - PutObject: ChecksumAlgorithm is the algorithm used to compute the object's checksum.
+	//   - NewMultipartUpload: ChecksumAlgorithm is the algorithm used to compute the object part's checksum.
+	//   - CompleteMultipartUpload: ChecksumAlgorithm is the algorithm used for verifying the checksum
+	//     of the complete object. If omitted, no verification of the complete object's checksum
+	//     will be performed.
+	//
+	// It is unused for all other operations.
+	ChecksumAlgorithm   hash.Algorithm
+
+	// ChecksumType indicates how the object's checksum is computed. Its purpose depends on the operation:
+	//   - NewMultipartUpload: ChecksumType indicates how the complete object's checksum is computed.
+	//     If omitted, the ObjectLayer implementation should use the default checksum type for the
+	//     object's checksum algorithm: COMPOSITE for CRC64NVME, and FULL_OBJECT for others.
+	//   - CompleteMultipartUpload: ChecksumType is the checksum type used for verifying the checksum
+	//     of the complete object.
+	//
+	// It is unused for all other operations.
+	ChecksumType ChecksumType
+
+	// ChecksumValue is the base64-encoded value of an object's checksum. For CompleteMultipartUpload,
+	// it is used for verifying the checksum of the complete object. It is unused for all other operations.
+	ChecksumValue string
 
 	Retention                 *objectlock.ObjectRetention // Optional retention configuration for the object
 	BypassGovernanceRetention bool                        // Is only useful for DeleteObject(s)
@@ -158,7 +180,7 @@ type ObjectLayer interface {
 
 	// Multipart operations.
 	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker, delimiter string, maxUploads int) (result ListMultipartsInfo, err error)
-	NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (uploadID string, err error)
+	NewMultipartUpload(ctx context.Context, bucket, object string, opts ObjectOptions) (info MultipartInfo, err error)
 	CopyObjectPart(ctx context.Context, srcBucket, srcObject, destBucket, destObject string, uploadID string, partID int,
 		startOffset int64, length int64, srcInfo ObjectInfo, srcOpts, dstOpts ObjectOptions) (info PartInfo, err error)
 	PutObjectPart(ctx context.Context, bucket, object, uploadID string, partID int, data *PutObjReader, opts ObjectOptions) (info PartInfo, err error)
