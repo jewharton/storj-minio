@@ -606,22 +606,22 @@ func (api ObjectAPIHandlers) GetObjectAttributesHandler(w http.ResponseWriter, r
 		return
 	}
 
-	objInfo, err := objectAPI.GetObjectInfo(ctx, bucket, object, opts)
-	if err != nil {
-		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
-	}
-
 	requestedAttributes := strings.TrimSpace(r.Header.Get(xhttp.AmzObjectAttributes))
 	if requestedAttributes == "" {
 		writeArgumentErrorResponse(errorCodes.ToAPIErr(ErrInvalidAttributeName), strings.ToLower(xhttp.AmzObjectAttributes), "")
 		return
 	}
 
-	// TODO: checksum and object parts are not supported yet.
+	objInfo, err := objectAPI.GetObjectInfo(ctx, bucket, object, opts)
+	if err != nil {
+		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	// TODO: object parts are not supported yet.
 	var response ObjectAttributesResponse
-	for _, name := range strings.Split(requestedAttributes, ",") {
-		switch name {
+	for name := range strings.SplitSeq(requestedAttributes, ",") {
+		switch strings.TrimSpace(name) {
 		case xhttp.ETag:
 			response.ETag = objInfo.ETag
 		case xhttp.StorageClass:
@@ -632,6 +632,20 @@ func (api ObjectAPIHandlers) GetObjectAttributesHandler(w http.ResponseWriter, r
 		case xhttp.ObjectSize:
 			response.ObjectSize = objInfo.Size
 		case xhttp.Checksum:
+			checksumResp := &ObjectAttributesChecksumResponse{
+				Checksum: ChecksumXML{
+					Algorithm: objInfo.ChecksumAlgorithm,
+					Value:     objInfo.ChecksumValue,
+				},
+				ChecksumType: objInfo.ChecksumType.String(),
+			}
+			if objInfo.ChecksumType == ChecksumTypeComposite {
+				// S3 removes the suffix from checksums returned by this operation
+				if hyphenIdx := strings.IndexRune(checksumResp.Checksum.Value, '-'); hyphenIdx != -1 {
+					checksumResp.Checksum.Value = checksumResp.Checksum.Value[:hyphenIdx]
+				}
+			}
+			response.Checksum = checksumResp
 		case xhttp.ObjectParts:
 		default:
 			writeArgumentErrorResponse(errorCodes.ToAPIErr(ErrInvalidAttributeName), strings.ToLower(xhttp.AmzObjectAttributes), name)

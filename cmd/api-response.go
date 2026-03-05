@@ -366,12 +366,20 @@ type Object struct {
 }
 
 // ObjectAttributesResponse returns metadata for GetObjectAttributes response.
-// TODO: checksum and object parts are not supported yet.
+// TODO: object parts are not supported yet.
 type ObjectAttributesResponse struct {
-	XMLName      xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ GetObjectAttributesResponse" json:"-"`
-	ETag         string   `xml:"ETag,omitempty"`
-	StorageClass string   `xml:"StorageClass,omitempty"`
-	ObjectSize   int64    `xml:"ObjectSize,omitempty"`
+	XMLName      xml.Name                          `xml:"http://s3.amazonaws.com/doc/2006-03-01/ GetObjectAttributesResponse" json:"-"`
+	ETag         string                            `xml:"ETag,omitempty"`
+	StorageClass string                            `xml:"StorageClass,omitempty"`
+	ObjectSize   int64                             `xml:"ObjectSize,omitempty"`
+	Checksum     *ObjectAttributesChecksumResponse `xml:"Checksum"`
+}
+
+// ObjectAttributesChecksumResponse is an element of ObjectAttributesResponse
+// that contains an object's checksum.
+type ObjectAttributesChecksumResponse struct {
+	Checksum     ChecksumXML
+	ChecksumType string `xml:",omitempty"`
 }
 
 // ObjectAttributesErrorResponse is a variation of APIErrorResponse that includes
