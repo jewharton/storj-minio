@@ -156,12 +156,58 @@ type ListObjectsV2Response struct {
 	EncodingType string `xml:"EncodingType,omitempty"`
 }
 
+// Ensure that Part implements xml.Marshaler.
+var _ xml.Marshaler = Part{}
+
 // Part container for part metadata.
 type Part struct {
 	PartNumber   int
 	LastModified string
 	ETag         string
 	Size         int64
+
+	ChecksumAlgorithm hash.Algorithm
+	ChecksumValue     string
+}
+
+// MarshalXML implements the xml.Marshaler interface.
+func (part Part) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	type simplePart struct {
+		PartNumber   int
+		LastModified string
+		ETag         string
+		Size         int64
+	}
+
+	type checksum struct {
+		XMLName xml.Name
+        Value   string `xml:",chardata"`
+	}
+
+	completePart := struct {
+		simplePart
+		Checksum *checksum
+	} {
+		simplePart: simplePart{
+			PartNumber:   part.PartNumber,
+			LastModified: part.LastModified,
+			ETag:         part.ETag,
+			Size:         part.Size,
+		},
+	}
+
+	if part.ChecksumAlgorithm != hash.AlgorithmNone {
+		if !part.ChecksumAlgorithm.IsValid() {
+			return fmt.Errorf("invalid checksum algorithm %d", part.ChecksumAlgorithm)
+		}
+
+		completePart.Checksum = &checksum{
+			XMLName: xml.Name{Local: checksumXMLPrefix+part.ChecksumAlgorithm.String()},
+			Value:   part.ChecksumValue,
+		}
+	}
+
+	return e.EncodeElement(completePart, start)
 }
 
 // ListPartsResponse - format for list parts response.
@@ -182,6 +228,9 @@ type ListPartsResponse struct {
 	NextPartNumberMarker int
 	MaxParts             int
 	IsTruncated          bool
+
+	ChecksumAlgorithm string `xml:",omitempty"`
+	ChecksumType      string `xml:",omitempty"`
 
 	// List of parts.
 	Parts []Part `xml:"Part"`
@@ -725,35 +774,42 @@ func generateCompleteMultpartUploadResponse(objInfo ObjectInfo, location string)
 
 // generates ListPartsResponse from ListPartsInfo.
 func generateListPartsResponse(partsInfo ListPartsInfo, encodingType string) ListPartsResponse {
-	listPartsResponse := ListPartsResponse{}
-	listPartsResponse.Bucket = partsInfo.Bucket
-	listPartsResponse.Key = s3EncodeName(partsInfo.Object, encodingType)
-	listPartsResponse.UploadID = partsInfo.UploadID
-	listPartsResponse.StorageClass = globalMinioDefaultStorageClass
+	listPartsResponse := ListPartsResponse{
+		Bucket:               partsInfo.Bucket,
+		Key:                  s3EncodeName(partsInfo.Object, encodingType),
+		UploadID:             partsInfo.UploadID,
+		StorageClass:         globalMinioDefaultStorageClass,
+		MaxParts:             partsInfo.MaxParts,
+		PartNumberMarker:     partsInfo.PartNumberMarker,
+		IsTruncated:          partsInfo.IsTruncated,
+		NextPartNumberMarker: partsInfo.NextPartNumberMarker,
+		Parts:                make([]Part, len(partsInfo.Parts)),
+		ChecksumType:         partsInfo.ChecksumType.String(),
 
-	// Dumb values not meaningful
-	listPartsResponse.Initiator = Initiator{
-		ID:          GlobalMinioDefaultOwnerID,
-		DisplayName: GlobalMinioDefaultOwnerID,
+		// Dumb values not meaningful
+		Initiator: Initiator{
+			ID:          GlobalMinioDefaultOwnerID,
+			DisplayName: GlobalMinioDefaultOwnerID,
+		},
+		Owner: Owner{
+			ID:          GlobalMinioDefaultOwnerID,
+			DisplayName: GlobalMinioDefaultOwnerID,
+		},
 	}
-	listPartsResponse.Owner = Owner{
-		ID:          GlobalMinioDefaultOwnerID,
-		DisplayName: GlobalMinioDefaultOwnerID,
+
+	if partsInfo.ChecksumAlgorithm != hash.AlgorithmNone {
+		listPartsResponse.ChecksumAlgorithm = partsInfo.ChecksumAlgorithm.String()
 	}
 
-	listPartsResponse.MaxParts = partsInfo.MaxParts
-	listPartsResponse.PartNumberMarker = partsInfo.PartNumberMarker
-	listPartsResponse.IsTruncated = partsInfo.IsTruncated
-	listPartsResponse.NextPartNumberMarker = partsInfo.NextPartNumberMarker
-
-	listPartsResponse.Parts = make([]Part, len(partsInfo.Parts))
 	for index, part := range partsInfo.Parts {
-		newPart := Part{}
-		newPart.PartNumber = part.PartNumber
-		newPart.ETag = "\"" + part.ETag + "\""
-		newPart.Size = part.Size
-		newPart.LastModified = part.LastModified.UTC().Format(iso8601TimeFormat)
-		listPartsResponse.Parts[index] = newPart
+		listPartsResponse.Parts[index] = Part{
+			PartNumber:        part.PartNumber,
+			ETag:              "\"" + part.ETag + "\"",
+			Size:              part.Size,
+			LastModified:      part.LastModified.UTC().Format(iso8601TimeFormat),
+			ChecksumAlgorithm: part.ChecksumAlgorithm,
+			ChecksumValue:     part.ChecksumValue,
+		}
 	}
 	return listPartsResponse
 }

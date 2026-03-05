@@ -341,6 +341,15 @@ type ListPartsInfo struct {
 
 	// Any metadata set during InitMultipartUpload, including encryption headers.
 	UserDefined map[string]string
+
+	// ChecksumAlgorithm is the algorithm used to compute the checksum of the parts' object.
+	// If the object has no checksum, it is hash.AlgorithmNone.
+	ChecksumAlgorithm hash.Algorithm
+
+	// ChecksumType indicates whether the checksum of the object composed of these parts
+	// will be computed over the checksums of the parts (as opposed to being computed over
+	// the object's contents).
+	ChecksumType ChecksumType
 }
 
 // Lookup - returns if uploadID is valid
