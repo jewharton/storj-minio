@@ -272,12 +272,14 @@ type ListBucketsResponse struct {
 
 // Upload container for in progress multipart upload
 type Upload struct {
-	Key          string
-	UploadID     string `xml:"UploadId"`
-	Initiator    Initiator
-	Owner        Owner
-	StorageClass string
-	Initiated    string
+	Key               string
+	UploadID          string `xml:"UploadId"`
+	Initiator         Initiator
+	Owner             Owner
+	StorageClass      string
+	Initiated         string
+	ChecksumAlgorithm string `xml:",omitempty"`
+	ChecksumType      string `xml:",omitempty"`
 }
 
 // CommonPrefix container for prefix response in ListObjectsResponse
@@ -816,31 +818,42 @@ func generateListPartsResponse(partsInfo ListPartsInfo, encodingType string) Lis
 
 // generates ListMultipartUploadsResponse for given bucket and ListMultipartsInfo.
 func generateListMultipartUploadsResponse(bucket string, multipartsInfo ListMultipartsInfo, encodingType string) ListMultipartUploadsResponse {
-	listMultipartUploadsResponse := ListMultipartUploadsResponse{}
-	listMultipartUploadsResponse.Bucket = bucket
-	listMultipartUploadsResponse.Delimiter = s3EncodeName(multipartsInfo.Delimiter, encodingType)
-	listMultipartUploadsResponse.IsTruncated = multipartsInfo.IsTruncated
-	listMultipartUploadsResponse.EncodingType = encodingType
-	listMultipartUploadsResponse.Prefix = s3EncodeName(multipartsInfo.Prefix, encodingType)
-	listMultipartUploadsResponse.KeyMarker = s3EncodeName(multipartsInfo.KeyMarker, encodingType)
-	listMultipartUploadsResponse.NextKeyMarker = s3EncodeName(multipartsInfo.NextKeyMarker, encodingType)
-	listMultipartUploadsResponse.MaxUploads = multipartsInfo.MaxUploads
-	listMultipartUploadsResponse.NextUploadIDMarker = multipartsInfo.NextUploadIDMarker
-	listMultipartUploadsResponse.UploadIDMarker = multipartsInfo.UploadIDMarker
-	listMultipartUploadsResponse.CommonPrefixes = make([]CommonPrefix, len(multipartsInfo.CommonPrefixes))
-	for index, commonPrefix := range multipartsInfo.CommonPrefixes {
-		listMultipartUploadsResponse.CommonPrefixes[index] = CommonPrefix{
+	listMultipartUploadsResponse := ListMultipartUploadsResponse{
+		Bucket:             bucket,
+		Delimiter:          s3EncodeName(multipartsInfo.Delimiter, encodingType),
+		IsTruncated:        multipartsInfo.IsTruncated,
+		EncodingType:       encodingType,
+		Prefix:             s3EncodeName(multipartsInfo.Prefix, encodingType),
+		KeyMarker:          s3EncodeName(multipartsInfo.KeyMarker, encodingType),
+		NextKeyMarker:      s3EncodeName(multipartsInfo.NextKeyMarker, encodingType),
+		MaxUploads:         multipartsInfo.MaxUploads,
+		NextUploadIDMarker: multipartsInfo.NextUploadIDMarker,
+		UploadIDMarker:     multipartsInfo.UploadIDMarker,
+		CommonPrefixes:     make([]CommonPrefix, 0, len(multipartsInfo.CommonPrefixes)),
+		Uploads:            make([]Upload, 0, len(multipartsInfo.Uploads)),
+	}
+
+	for _, commonPrefix := range multipartsInfo.CommonPrefixes {
+		listMultipartUploadsResponse.CommonPrefixes = append(listMultipartUploadsResponse.CommonPrefixes, CommonPrefix{
 			Prefix: s3EncodeName(commonPrefix, encodingType),
+		})
+	}
+
+	for _, info := range multipartsInfo.Uploads {
+		upload := Upload{
+			UploadID:     info.UploadID,
+			Key:          s3EncodeName(info.Object, encodingType),
+			Initiated:    info.Initiated.UTC().Format(iso8601TimeFormat),
+			ChecksumType: info.ChecksumType.String(),
 		}
+
+		if info.ChecksumAlgorithm != hash.AlgorithmNone {
+			upload.ChecksumAlgorithm = info.ChecksumAlgorithm.String()
+		}
+
+		listMultipartUploadsResponse.Uploads = append(listMultipartUploadsResponse.Uploads, upload)
 	}
-	listMultipartUploadsResponse.Uploads = make([]Upload, len(multipartsInfo.Uploads))
-	for index, upload := range multipartsInfo.Uploads {
-		newUpload := Upload{}
-		newUpload.UploadID = upload.UploadID
-		newUpload.Key = s3EncodeName(upload.Object, encodingType)
-		newUpload.Initiated = upload.Initiated.UTC().Format(iso8601TimeFormat)
-		listMultipartUploadsResponse.Uploads[index] = newUpload
-	}
+
 	return listMultipartUploadsResponse
 }
 
