@@ -1043,6 +1043,19 @@ func (api ObjectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	var checksumAlgo hash.Algorithm
+	if checksumAlgoStr := r.Header.Get(xhttp.AmzChecksumAlgorithm); checksumAlgoStr != "" {
+		var ok bool
+		if checksumAlgo, ok = parseChecksumAlgorithm(checksumAlgoStr); !ok {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidChecksumAlgorithm), r.URL, guessIsBrowserReq(r))
+			return
+		}
+		if checksumAlgo != hash.AlgorithmNone && !api.awsig.checksumsEnabled {
+			WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrChecksumsUnsupported), r.URL, guessIsBrowserReq(r))
+			return
+		}
+	}
+
 	// Check if bucket encryption is enabled
 	_, err = globalBucketSSEConfigSys.Get(dstBucket)
 	// This request header needs to be set prior to setting ObjectOptions
@@ -1073,6 +1086,8 @@ func (api ObjectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 	cpSrcDstSame := isStringEqual(pathJoin(srcBucket, srcObject), pathJoin(dstBucket, dstObject))
+
+	dstOpts.ChecksumAlgorithm = checksumAlgo
 
 	getObjectNInfo := objectAPI.GetObjectNInfo
 	if cacheAPI, exists := api.cacheAPI(); exists {
@@ -1404,7 +1419,7 @@ func (api ObjectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	}
 	objInfo.ETag = getDecryptedETag(r.Header, objInfo, false)
 
-	response := generateCopyObjectResponse(objInfo.ETag, objInfo.ModTime)
+	response := generateCopyObjectResponse(objInfo)
 	encodedSuccessResponse, err := EncodeResponse(response)
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))

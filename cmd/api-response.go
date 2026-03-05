@@ -395,6 +395,7 @@ type CopyObjectResponse struct {
 	XMLName      xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CopyObjectResult" json:"-"`
 	LastModified string   // time string of format "2006-01-02T15:04:05.000Z"
 	ETag         string   // md5sum of the copied object.
+	Checksum     ChecksumXML
 }
 
 // CopyObjectPartResponse container returns ETag and LastModified of the successfully copied object
@@ -742,10 +743,14 @@ func generateListObjectsV2Response(bucket, prefix, token, nextToken, startAfter,
 }
 
 // generates CopyObjectResponse from etag and lastModified time.
-func generateCopyObjectResponse(etag string, lastModified time.Time) CopyObjectResponse {
+func generateCopyObjectResponse(objInfo ObjectInfo) CopyObjectResponse {
 	return CopyObjectResponse{
-		ETag:         "\"" + etag + "\"",
-		LastModified: lastModified.UTC().Format(iso8601TimeFormat),
+		ETag:         "\"" + objInfo.ETag + "\"",
+		LastModified: objInfo.ModTime.UTC().Format(iso8601TimeFormat),
+		Checksum: ChecksumXML{
+			Algorithm: objInfo.ChecksumAlgorithm,
+			Value:     objInfo.ChecksumValue,
+		},
 	}
 }
 
