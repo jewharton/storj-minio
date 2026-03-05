@@ -301,6 +301,9 @@ type Object struct {
 	ETag         string
 	Size         int64
 
+	ChecksumAlgorithm string `xml:",omitempty"`
+	ChecksumType      string `xml:",omitempty"`
+
 	// Owner of the object.
 	Owner Owner
 
@@ -480,137 +483,175 @@ func generateListBucketsResponse(buckets []BucketInfo) ListBucketsResponse {
 
 // generates an ListBucketVersions response for the said bucket with other enumerated options.
 func generateListVersionsResponse(bucket, prefix, marker, versionIDMarker, delimiter, encodingType string, maxKeys int, resp ListObjectVersionsInfo) ListVersionsResponse {
-	versions := make([]ObjectVersion, 0, len(resp.Objects))
-	var owner = Owner{
-		ID:          GlobalMinioDefaultOwnerID,
-		DisplayName: GlobalMinioDefaultOwnerDisplayName,
+	data := ListVersionsResponse{
+		Name:                bucket,
+		Versions:            make([]ObjectVersion, 0, len(resp.Objects)),
+		EncodingType:        encodingType,
+		Prefix:              s3EncodeName(prefix, encodingType),
+		KeyMarker:           s3EncodeName(marker, encodingType),
+		Delimiter:           s3EncodeName(delimiter, encodingType),
+		MaxKeys:             maxKeys,
+		NextKeyMarker:       s3EncodeName(resp.NextMarker, encodingType),
+		NextVersionIDMarker: resp.NextVersionIDMarker,
+		VersionIDMarker:     versionIDMarker,
+		IsTruncated:         resp.IsTruncated,
+		CommonPrefixes:      make([]CommonPrefix, 0, len(resp.Prefixes)),
 	}
-	var data = ListVersionsResponse{}
 
 	for _, object := range resp.Objects {
-		var content = ObjectVersion{}
 		if object.Name == "" {
 			continue
 		}
-		content.Key = s3EncodeName(object.Name, encodingType)
-		content.LastModified = object.ModTime.UTC().Format(iso8601TimeFormat)
+
+		content := ObjectVersion{
+			Object: Object{
+				Key:          s3EncodeName(object.Name, encodingType),
+				LastModified: object.ModTime.UTC().Format(iso8601TimeFormat),
+				Size:         object.Size,
+				Owner: Owner{
+					ID:          GlobalMinioDefaultOwnerID,
+					DisplayName: GlobalMinioDefaultOwnerDisplayName,
+				},
+				ChecksumType: object.ChecksumType.String(),
+			},
+			VersionID:      object.VersionID,
+			IsLatest:       object.IsLatest,
+			IsDeleteMarker: object.DeleteMarker,
+		}
+
 		if object.ETag != "" {
 			content.ETag = "\"" + object.ETag + "\""
 		}
-		content.Size = object.Size
+
+		if object.ChecksumAlgorithm != hash.AlgorithmNone {
+			content.ChecksumAlgorithm = object.ChecksumAlgorithm.String()
+		}
+
 		if object.StorageClass != "" {
 			content.StorageClass = object.StorageClass
 		} else {
 			content.StorageClass = globalMinioDefaultStorageClass
 		}
-		content.Owner = owner
-		content.VersionID = object.VersionID
+
 		if content.VersionID == "" {
 			content.VersionID = nullVersionID
 		}
-		content.IsLatest = object.IsLatest
-		content.IsDeleteMarker = object.DeleteMarker
-		versions = append(versions, content)
+
+		data.Versions = append(data.Versions, content)
 	}
 
-	data.Name = bucket
-	data.Versions = versions
-	data.EncodingType = encodingType
-	data.Prefix = s3EncodeName(prefix, encodingType)
-	data.KeyMarker = s3EncodeName(marker, encodingType)
-	data.Delimiter = s3EncodeName(delimiter, encodingType)
-	data.MaxKeys = maxKeys
-
-	data.NextKeyMarker = s3EncodeName(resp.NextMarker, encodingType)
-	data.NextVersionIDMarker = resp.NextVersionIDMarker
-	data.VersionIDMarker = versionIDMarker
-	data.IsTruncated = resp.IsTruncated
-
-	prefixes := make([]CommonPrefix, 0, len(resp.Prefixes))
 	for _, prefix := range resp.Prefixes {
-		var prefixItem = CommonPrefix{}
-		prefixItem.Prefix = s3EncodeName(prefix, encodingType)
-		prefixes = append(prefixes, prefixItem)
+		data.CommonPrefixes = append(data.CommonPrefixes, CommonPrefix{
+			Prefix: s3EncodeName(prefix, encodingType),
+		})
 	}
-	data.CommonPrefixes = prefixes
+
 	return data
 }
 
 // generates an ListObjectsV1 response for the said bucket with other enumerated options.
 func generateListObjectsV1Response(bucket, prefix, marker, delimiter, encodingType string, maxKeys int, resp ListObjectsInfo) ListObjectsResponse {
-	contents := make([]Object, 0, len(resp.Objects))
-	var owner = Owner{
-		ID:          GlobalMinioDefaultOwnerID,
-		DisplayName: GlobalMinioDefaultOwnerDisplayName,
+	data := ListObjectsResponse{
+		Name:           bucket,
+		Contents:       make([]Object, 0, len(resp.Objects)),
+		EncodingType:   encodingType,
+		Prefix:         s3EncodeName(prefix, encodingType),
+		Marker:         s3EncodeName(marker, encodingType),
+		Delimiter:      s3EncodeName(delimiter, encodingType),
+		MaxKeys:        maxKeys,
+		NextMarker:     s3EncodeName(resp.NextMarker, encodingType),
+		IsTruncated:    resp.IsTruncated,
+		CommonPrefixes: make([]CommonPrefix, 0, len(resp.Prefixes)),
 	}
-	var data = ListObjectsResponse{}
 
 	for _, object := range resp.Objects {
-		var content = Object{}
 		if object.Name == "" {
 			continue
 		}
-		content.Key = s3EncodeName(object.Name, encodingType)
-		content.LastModified = object.ModTime.UTC().Format(iso8601TimeFormat)
+
+		content := Object{
+			Key:          s3EncodeName(object.Name, encodingType),
+			LastModified: object.ModTime.UTC().Format(iso8601TimeFormat),
+			Size:         object.Size,
+			Owner: Owner{
+				ID:          GlobalMinioDefaultOwnerID,
+				DisplayName: GlobalMinioDefaultOwnerDisplayName,
+			},
+			ChecksumType: object.ChecksumType.String(),
+		}
+
 		if object.ETag != "" {
 			content.ETag = "\"" + object.ETag + "\""
 		}
-		content.Size = object.Size
+
+		if object.ChecksumAlgorithm != hash.AlgorithmNone {
+			content.ChecksumAlgorithm = object.ChecksumAlgorithm.String()
+		}
+
 		if object.StorageClass != "" {
 			content.StorageClass = object.StorageClass
 		} else {
 			content.StorageClass = globalMinioDefaultStorageClass
 		}
-		content.Owner = owner
-		contents = append(contents, content)
+
+		data.Contents = append(data.Contents, content)
 	}
-	data.Name = bucket
-	data.Contents = contents
 
-	data.EncodingType = encodingType
-	data.Prefix = s3EncodeName(prefix, encodingType)
-	data.Marker = s3EncodeName(marker, encodingType)
-	data.Delimiter = s3EncodeName(delimiter, encodingType)
-	data.MaxKeys = maxKeys
-	data.NextMarker = s3EncodeName(resp.NextMarker, encodingType)
-	data.IsTruncated = resp.IsTruncated
-
-	prefixes := make([]CommonPrefix, 0, len(resp.Prefixes))
 	for _, prefix := range resp.Prefixes {
-		var prefixItem = CommonPrefix{}
-		prefixItem.Prefix = s3EncodeName(prefix, encodingType)
-		prefixes = append(prefixes, prefixItem)
+		data.CommonPrefixes = append(data.CommonPrefixes, CommonPrefix{
+			Prefix: s3EncodeName(prefix, encodingType),
+		})
 	}
-	data.CommonPrefixes = prefixes
+
 	return data
 }
 
 // generates an ListObjectsV2 response for the said bucket with other enumerated options.
 func generateListObjectsV2Response(bucket, prefix, token, nextToken, startAfter, delimiter, encodingType string, fetchOwner, isTruncated bool, maxKeys int, objects []ObjectInfo, prefixes []string, metadata bool) ListObjectsV2Response {
-	contents := make([]Object, 0, len(objects))
-	var owner = Owner{
-		ID:          GlobalMinioDefaultOwnerID,
-		DisplayName: GlobalMinioDefaultOwnerDisplayName,
+	data := ListObjectsV2Response{
+		Name:                  bucket,
+		Contents:              make([]Object, 0, len(objects)),
+		EncodingType:          encodingType,
+		StartAfter:            s3EncodeName(startAfter, encodingType),
+		Delimiter:             s3EncodeName(delimiter, encodingType),
+		Prefix:                s3EncodeName(prefix, encodingType),
+		MaxKeys:               maxKeys,
+		ContinuationToken:     base64.StdEncoding.EncodeToString([]byte(token)),
+		NextContinuationToken: base64.StdEncoding.EncodeToString([]byte(nextToken)),
+		IsTruncated:           isTruncated,
+		CommonPrefixes:        make([]CommonPrefix, 0, len(prefixes)),
 	}
-	var data = ListObjectsV2Response{}
 
 	for _, object := range objects {
-		var content = Object{}
 		if object.Name == "" {
 			continue
 		}
-		content.Key = s3EncodeName(object.Name, encodingType)
-		content.LastModified = object.ModTime.UTC().Format(iso8601TimeFormat)
+
+		content := Object{
+			Key:          s3EncodeName(object.Name, encodingType),
+			LastModified: object.ModTime.UTC().Format(iso8601TimeFormat),
+			Size:         object.Size,
+			Owner: Owner{
+				ID:          GlobalMinioDefaultOwnerID,
+				DisplayName: GlobalMinioDefaultOwnerDisplayName,
+			},
+			ChecksumType: object.ChecksumType.String(),
+		}
+
 		if object.ETag != "" {
 			content.ETag = "\"" + object.ETag + "\""
 		}
-		content.Size = object.Size
+
+		if object.ChecksumAlgorithm != hash.AlgorithmNone {
+			content.ChecksumAlgorithm = object.ChecksumAlgorithm.String()
+		}
+
 		if object.StorageClass != "" {
 			content.StorageClass = object.StorageClass
 		} else {
 			content.StorageClass = globalMinioDefaultStorageClass
 		}
-		content.Owner = owner
+
 		if metadata {
 			content.UserMetadata = make(StringMap)
 			for k, v := range CleanMinioInternalMetadataKeys(object.UserDefined) {
@@ -626,28 +667,18 @@ func generateListObjectsV2Response(bucket, prefix, token, nextToken, startAfter,
 				content.UserMetadata[k] = v
 			}
 		}
-		contents = append(contents, content)
+
+		data.Contents = append(data.Contents, content)
 	}
-	data.Name = bucket
-	data.Contents = contents
 
-	data.EncodingType = encodingType
-	data.StartAfter = s3EncodeName(startAfter, encodingType)
-	data.Delimiter = s3EncodeName(delimiter, encodingType)
-	data.Prefix = s3EncodeName(prefix, encodingType)
-	data.MaxKeys = maxKeys
-	data.ContinuationToken = base64.StdEncoding.EncodeToString([]byte(token))
-	data.NextContinuationToken = base64.StdEncoding.EncodeToString([]byte(nextToken))
-	data.IsTruncated = isTruncated
-
-	commonPrefixes := make([]CommonPrefix, 0, len(prefixes))
 	for _, prefix := range prefixes {
-		var prefixItem = CommonPrefix{}
-		prefixItem.Prefix = s3EncodeName(prefix, encodingType)
-		commonPrefixes = append(commonPrefixes, prefixItem)
+		data.CommonPrefixes = append(data.CommonPrefixes, CommonPrefix{
+			Prefix: s3EncodeName(prefix, encodingType),
+		})
 	}
-	data.CommonPrefixes = commonPrefixes
+
 	data.KeyCount = len(data.Contents) + len(data.CommonPrefixes)
+
 	return data
 }
 
