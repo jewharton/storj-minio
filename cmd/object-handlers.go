@@ -2415,7 +2415,7 @@ func (api ObjectAPIHandlers) CopyObjectPartHandler(w http.ResponseWriter, r *htt
 		return
 	}
 
-	response := generateCopyObjectPartResponse(partInfo.ETag, partInfo.LastModified)
+	response := generateCopyObjectPartResponse(partInfo)
 	encodedSuccessResponse, err := EncodeResponse(response)
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))

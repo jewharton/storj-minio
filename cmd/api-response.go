@@ -26,7 +26,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
 	xhttp "storj.io/minio/cmd/http"
 	"storj.io/minio/cmd/logger"
@@ -403,6 +402,7 @@ type CopyObjectPartResponse struct {
 	XMLName      xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CopyPartResult" json:"-"`
 	LastModified string   // time string of format "2006-01-02T15:04:05.000Z"
 	ETag         string   // md5sum of the copied object part.
+	Checksum     ChecksumXML
 }
 
 // Initiator inherit from Owner struct, fields are same
@@ -755,10 +755,14 @@ func generateCopyObjectResponse(objInfo ObjectInfo) CopyObjectResponse {
 }
 
 // generates CopyObjectPartResponse from etag and lastModified time.
-func generateCopyObjectPartResponse(etag string, lastModified time.Time) CopyObjectPartResponse {
+func generateCopyObjectPartResponse(partInfo PartInfo) CopyObjectPartResponse {
 	return CopyObjectPartResponse{
-		ETag:         "\"" + etag + "\"",
-		LastModified: lastModified.UTC().Format(iso8601TimeFormat),
+		ETag:         "\"" + partInfo.ETag + "\"",
+		LastModified: partInfo.LastModified.UTC().Format(iso8601TimeFormat),
+		Checksum: ChecksumXML{
+			Algorithm: partInfo.ChecksumAlgorithm,
+			Value:     partInfo.ChecksumValue,
+		},
 	}
 }
 
