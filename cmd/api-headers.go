@@ -30,6 +30,7 @@ import (
 	"storj.io/minio/cmd/crypto"
 	xhttp "storj.io/minio/cmd/http"
 	"storj.io/minio/pkg/bucket/lifecycle"
+	"storj.io/minio/pkg/hash"
 )
 
 // Returns a hexadecimal representation of time at the
@@ -98,6 +99,8 @@ func setObjectHeaders(w http.ResponseWriter, objInfo ObjectInfo, rs *HTTPRangeSp
 	if objInfo.ETag != "" {
 		w.Header()[xhttp.ETag] = []string{"\"" + objInfo.ETag + "\""}
 	}
+
+	setObjectChecksumHeaders(w.Header(), objInfo)
 
 	if objInfo.ContentType != "" {
 		w.Header().Set(xhttp.ContentType, objInfo.ContentType)
@@ -206,4 +209,13 @@ func setObjectHeaders(w http.ResponseWriter, objInfo ObjectInfo, rs *HTTPRangeSp
 	}
 
 	return nil
+}
+
+func setObjectChecksumHeaders(h http.Header, objInfo ObjectInfo) {
+	if objInfo.ChecksumAlgorithm == hash.AlgorithmNone {
+		return
+	}
+	algoHeader := xhttp.AmzChecksumAlgorithmPrefix + objInfo.ChecksumAlgorithm.String()
+	h.Set(algoHeader, objInfo.ChecksumValue)
+	h.Set(xhttp.AmzChecksumType, objInfo.ChecksumType.String())
 }

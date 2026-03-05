@@ -26,7 +26,6 @@ import (
 
 	xhttp "storj.io/minio/cmd/http"
 	"storj.io/minio/pkg/bucket/lifecycle"
-	"storj.io/minio/pkg/hash"
 )
 
 var (
@@ -243,11 +242,7 @@ func setPutObjHeaders(w http.ResponseWriter, objInfo ObjectInfo, delete bool) {
 		w.Header()[xhttp.ETag] = []string{`"` + objInfo.ETag + `"`}
 	}
 
-	if objInfo.ChecksumAlgorithm != hash.AlgorithmNone {
-		algoHeader := xhttp.AmzChecksumAlgorithmPrefix + objInfo.ChecksumAlgorithm.String()
-		w.Header().Set(algoHeader, objInfo.ChecksumValue)
-		w.Header().Set(xhttp.AmzChecksumType, objInfo.ChecksumType.String())
-	}
+	setObjectChecksumHeaders(w.Header(), objInfo)
 
 	// Set the relevant version ID as part of the response header.
 	if objInfo.VersionID != "" {

@@ -330,11 +330,18 @@ func (api ObjectAPIHandlers) GetObjectHandler(w http.ResponseWriter, r *http.Req
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrBadRequest), r.URL, guessIsBrowserReq(r))
 		return
 	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
 	object, err := unescapePath(vars["object"])
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	checksumEnabled, s3Error := extractChecksumMode(r.Header)
+	if s3Error != ErrNone {
+		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
@@ -464,6 +471,11 @@ func (api ObjectAPIHandlers) GetObjectHandler(w http.ResponseWriter, r *http.Req
 	defer gr.Close()
 
 	objInfo := gr.ObjInfo
+
+	if !checksumEnabled {
+		objInfo.ChecksumAlgorithm = hash.AlgorithmNone
+		objInfo.ChecksumValue = ""
+	}
 
 	// Automatically remove the object/version is an expiry lifecycle rule can be applied
 	if lc, err := globalLifecycleSys.Get(bucket); err == nil {
@@ -661,11 +673,18 @@ func (api ObjectAPIHandlers) HeadObjectHandler(w http.ResponseWriter, r *http.Re
 		WriteErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrBadRequest), r.URL, guessIsBrowserReq(r))
 		return
 	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
 	object, err := unescapePath(vars["object"])
 	if err != nil {
 		WriteErrorResponse(ctx, w, ToAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+		return
+	}
+
+	checksumEnabled, s3Error := extractChecksumMode(r.Header)
+	if s3Error != ErrNone {
+		writeErrorResponseHeadersOnly(w, errorCodes.ToAPIErr(s3Error))
 		return
 	}
 
@@ -744,6 +763,11 @@ func (api ObjectAPIHandlers) HeadObjectHandler(w http.ResponseWriter, r *http.Re
 			writeErrorResponseHeadersOnly(w, ToAPIError(ctx, err))
 			return
 		}
+	}
+
+	if !checksumEnabled {
+		objInfo.ChecksumAlgorithm = hash.AlgorithmNone
+		objInfo.ChecksumValue = ""
 	}
 
 	// Automatically remove the object/version is an expiry lifecycle rule can be applied

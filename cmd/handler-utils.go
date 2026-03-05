@@ -286,6 +286,17 @@ func extractChecksumType(h http.Header) (checksumType ChecksumType, s3Error APIE
 	return checksumType, ErrNone
 }
 
+func extractChecksumMode(h http.Header) (enabled bool, s3Error APIErrorCode) {
+	values, ok := h[xhttp.AmzChecksumMode]
+	if !ok {
+		return false, ErrNone
+	}
+	if strings.ToUpper(values[0]) == "ENABLED" {
+		return true, ErrNone
+	}
+	return false, ErrAccessDenied
+}
+
 func parseChecksumAlgorithm(algoStr string) (algo hash.Algorithm, ok bool) {
 	switch strings.ToUpper(algoStr) {
 	case "CRC32":

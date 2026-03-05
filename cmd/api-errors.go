@@ -214,6 +214,7 @@ const (
 	ErrUnsupportedChecksumType
 	ErrChecksumTypeWithoutAlgorithm
 	ErrInvalidChecksumInXML
+	ErrInvalidChecksumMode
 	// Add new error codes here.
 
 	// SSE-S3 related API errors
@@ -1083,6 +1084,11 @@ var errorCodes = errorCodeMap{
 	ErrInvalidChecksumInXML: {
 		Code:           "InvalidArgument",
 		Description:    "Invalid Base64 or multiple checksums present in request.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidChecksumMode: {
+		Code:           "InvalidRequest",
+		Description:    "The value for the x-amz-checksum-mode header is invalid.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	/// Bucket notification related errors.

@@ -64,6 +64,7 @@ const (
 	AmzChecksumAlgorithm       = "X-Amz-Checksum-Algorithm"
 	AmzChecksumAlgorithmPrefix = "X-Amz-Checksum-"
 	AmzChecksumType            = "X-Amz-Checksum-Type"
+	AmzChecksumMode            = "X-Amz-Checksum-Mode"
 
 	// S3 object tagging
 	AmzObjectTagging = "X-Amz-Tagging"
